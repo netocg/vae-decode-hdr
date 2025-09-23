@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-hdr-vae-decode"
+version = "1.0.0"
+description = "A custom ComfyUI node that preserves full dynamic range and bit depth capabilities for professional VFX workflows"
+authors = [
+    {name = "HDR VAE Developer", email = "developer@example.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "numpy>=1.20.0",
+    "pillow>=8.0.0",
+    "opencv-python>=4.5.0",
+    "einops>=0.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/vae-decode-hdr"
+Repository = "https://github.com/your-username/vae-decode-hdr"
+
+[tool.comfyui]
+PublisherId = "hdr-vae-developer"
+DisplayName = "HDR VAE Decode Node"
+Description = "Preserves full dynamic range and bit depth capabilities of Flux.1 Dev model for professional VFX workflows"
+Icon = "https://raw.githubusercontent.com/your-username/vae-decode-hdr/main/icon.png"
+Banner = "https://raw.githubusercontent.com/your-username/vae-decode-hdr/main/banner.png"
