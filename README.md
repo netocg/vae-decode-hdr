@@ -27,6 +27,11 @@ A custom ComfyUI node that intelligently preserves HDR data from VAE models for 
 
 After extensive research and development, I've created a node that solves the fundamental HDR preservation problem in VAE decoding. Instead of blindly bypassing layers, this implementation uses a **scientific approach** to understand and work with the VAE's natural behavior:
 
+![HDR VAE Workflow](Nodes.jpg)
+*Professional HDR workflow: HDR VAE Decode → Linear EXR Export for true HDR preservation*
+
+**🎯 Important**: This HDR VAE Decode is **specifically built and tested for Flux.1 VAE models**. While it may work with other VAE architectures, it has been optimized for Flux.1's specific decoder structure and may not perform as expected with different models.
+
 - **Intelligent Analysis**: Automatically analyzes the VAE's `conv_out` transformation to understand how HDR data is processed
 - **Smart HDR Expansion**: Preserves the VAE's excellent tone mapping while selectively expanding highlight regions  
 - **Multiple HDR Modes**: Conservative, Moderate, Exposure, and Aggressive modes for different workflows
@@ -35,7 +40,10 @@ After extensive research and development, I've created a node that solves the fu
 
 ## Problem Statement
 
-ComfyUI's default image processing pipeline has several HDR-breaking limitations:
+ComfyUI's default image processing pipeline has several HDR-breaking limitations that result in significant quality loss:
+
+![Standard VAE Decode Issues](images/Nuke_screenshot.jpg)
+*❌ Standard Processing: Clipped highlights, limited color range, lost detail in bright areas*
 
 ### VAE Decode Issues:
 1. **Range Clamping**: VAE outputs are constrained to 0-1 pixel values  
@@ -48,6 +56,8 @@ ComfyUI's default image processing pipeline has several HDR-breaking limitations
 6. **HDR Data Destruction**: Even if you preserve HDR in processing, Save Image destroys it during export
 7. **False EXR Support**: Claims to save EXR but actually saves 8-bit data in EXR container
 8. **VFX Incompatible**: Produces files that appear HDR but contain no extended range data
+
+**The result**: Beautiful AI-generated content gets degraded during processing, losing the very highlight details and color richness that make images compelling for professional use.
 
 ## Technical Innovation
 
@@ -71,6 +81,17 @@ Through systematic analysis, I discovered that the VAE's `conv_out` layer applie
   - **Aggressive**: Full mathematical recovery for maximum range
 - **Robust Fallback System**: Smart bypass → Simple bypass if intelligent methods fail
 - **Professional Pipeline**: Float32 throughout with proper tensor formatting for ComfyUI
+
+### 🎯 **The HDR Solution**
+
+![HDR VAE Decode Success](images/Nuke_screenshot2.jpg)  
+*✅ HDR VAE Decode: Extended highlights preserved, natural color depth, professional VFX quality*
+
+**Dramatic improvements achieved:**
+- **Highlight Detail Recovery**: Bright bokeh retains structure instead of clipping to pure white
+- **Color Richness**: Full spectrum preservation with enhanced vibrancy and depth
+- **Natural Light Falloff**: Smooth gradients in bright areas maintain photographic realism
+- **VFX Compositing Ready**: Extended range enables professional color grading and exposure control
 
 ## Installation
 
@@ -96,6 +117,9 @@ pip install -r requirements.txt
 4. Restart ComfyUI
 
 The nodes should appear in the **latent** category as "HDR VAE Decode" and in the **image** category as "Linear EXR Export".
+
+![HDR VAE Workflow](Nodes.jpg)
+*What you'll create: HDR VAE Decode (latent category) → Linear EXR Export (image category)*
 
 ## Usage
 
@@ -187,6 +211,9 @@ This package now includes a **Linear EXR Export** node for professional HDR outp
 ### Complete HDR Workflow:
 **HDR VAE Decode** → **Linear EXR Export** → **Professional EXR files** ready for compositing in Nuke, After Effects, or other VFX software.
 
+![HDR VAE Workflow](Nodes.jpg)
+*Correct node setup: Both nodes are essential for professional HDR output*
+
 The Linear EXR Export node will appear in the **image** category in ComfyUI.
 
 ### ⚠️ **Warning: Do NOT use ComfyUI's built-in Save Image node with HDR data - it will destroy all values above 1.0!**
@@ -205,6 +232,27 @@ The intelligent HDR approach successfully preserves HDR data while maintaining p
 - **Processing Speed**: ~40-42 seconds for 752×1328 images (similar to standard VAE decode)
 - **Memory Efficiency**: Float32 pipeline with smart device management (CUDA/CPU synchronization)
 
+### 🔍 **Quality Comparison Examples**
+
+The HDR VAE Decode delivers dramatically superior results with preserved highlight details and enhanced color reproduction:
+
+![Standard VAE Decode](images/Nuke_screenshot.jpg)
+*Standard VAE decode: Limited dynamic range, clipped highlights, reduced color vibrancy*
+
+![HDR VAE Decode](images/Nuke_screenshot2.jpg)  
+*HDR VAE Decode: Extended highlights preserved, enhanced color depth, natural bokeh detail*
+
+**Key Improvements Visible:**
+- ✅ **Highlight Preservation**: Bright bokeh elements retain detail instead of clipping to white
+- ✅ **Enhanced Color Range**: Richer, more vibrant colors throughout the image  
+- ✅ **Natural Gradients**: Smooth transitions in bright areas instead of hard clipping
+- ✅ **Professional Quality**: VFX-ready output suitable for compositing and grading
+
+For direct comparison of output quality, reference examples are also provided in the `/images` folder:
+
+- **`Sample_builtin_vae_decode.png`** - Output from ComfyUI's built-in VAE decode (0-1 range, limited dynamic range)
+- **`Sample_hdr_vae_decode.exr`** - Output from HDR VAE Decode (extended range, preserved highlights and shadows)
+
 ## Technical Achievements  
 
 Through this project, I solved several challenging problems:
@@ -217,10 +265,31 @@ Through this project, I solved several challenging problems:
 
 ## Compatibility
 
-- **Primary Target**: Flux.1 Dev VAE model
-- **Tested With**: ComfyUI stable versions
-- **Requirements**: Python 3.8+, PyTorch, CUDA-capable GPU recommended
-- **Formats**: Outputs compatible with EXR export nodes for professional workflows
+### 🎯 **VAE Model Support**
+
+- **✅ Fully Supported**: Flux.1 Dev VAE model (primary target)
+- **⚠️ Experimental**: Other VAE architectures (may work but not guaranteed)
+- **❌ Not Recommended**: SD 1.5, SDXL, or other non-Flux VAE models without testing
+
+**Important**: This node was specifically engineered for Flux.1's VAE architecture. The intelligent analysis, bypass methods, and channel reduction logic are optimized for Flux.1's specific:
+- 128-channel intermediate representations
+- Up-block structure with ResNet + transposed convolution
+- `conv_out` sigmoid normalization behavior
+
+While the fallback methods may work with other models, optimal HDR preservation is only guaranteed with Flux.1.
+
+### 🖥️ **System Requirements**
+
+- **ComfyUI**: Stable versions (tested with latest releases)
+- **Python**: 3.8+ required
+- **Hardware**: CUDA-capable GPU strongly recommended for performance
+- **Memory**: Sufficient VRAM for your target resolution + model
+
+### 📁 **Output Compatibility**
+
+- **Formats**: Professional EXR with Linear EXR Export node
+- **Software**: Nuke, After Effects, DaVinci Resolve, Blender
+- **Workflow**: VFX compositing and color grading pipelines
 
 ## Troubleshooting
 
@@ -240,10 +309,14 @@ Through this project, I solved several challenging problems:
 
 ### 🔍 **How to Verify Your Workflow is Correct**
 
+![HDR VAE Workflow](Nodes.jpg)
+*✅ Correct workflow: HDR VAE Decode connected to Linear EXR Export*
+
 1. **Check Node Connection**: HDR VAE Decode → Linear EXR Export (not Save Image)
 2. **Look for Console Output**: Should show "HDR pixels: [number] >0" in Linear EXR Export logs
 3. **Verify File Size**: True HDR EXR files are typically 2-5MB+ for 1K images (vs <1MB for fake HDR)
 4. **Test in VFX Software**: Load in Nuke/After Effects and adjust exposure - should see extended highlights
+5. **Compare with Examples**: Check `/images/Sample_builtin_vae_decode.png` vs `/images/Sample_hdr_vae_decode.exr` to see the quality difference
 
 ## Development Notes
 
