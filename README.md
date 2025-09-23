@@ -27,7 +27,7 @@ A custom ComfyUI node that intelligently preserves HDR data from VAE models for 
 
 After extensive research and development, I've created a node that solves the fundamental HDR preservation problem in VAE decoding. Instead of blindly bypassing layers, this implementation uses a **scientific approach** to understand and work with the VAE's natural behavior:
 
-![HDR VAE Workflow](Nodes.jpg)
+![HDR VAE Workflow](images/Nodes.jpg)
 *Professional HDR workflow: HDR VAE Decode → Linear EXR Export for true HDR preservation*
 
 **🎯 Important**: This HDR VAE Decode is **specifically built and tested for Flux.1 VAE models**. While it may work with other VAE architectures, it has been optimized for Flux.1's specific decoder structure and may not perform as expected with different models.
@@ -118,7 +118,7 @@ pip install -r requirements.txt
 
 The nodes should appear in the **latent** category as "HDR VAE Decode" and in the **image** category as "Linear EXR Export".
 
-![HDR VAE Workflow](Nodes.jpg)
+![HDR VAE Workflow](images/Nodes.jpg)
 *What you'll create: HDR VAE Decode (latent category) → Linear EXR Export (image category)*
 
 ## Usage
@@ -145,7 +145,7 @@ The node first attempts **intelligent HDR decode** using scientific analysis of 
 
 ## Example Workflow
 
-![HDR VAE Workflow](Nodes.jpg)
+![HDR VAE Workflow](images/Nodes.jpg)
 *Example ComfyUI workflow showing HDR VAE Decode connected to Linear EXR Export*
 
 For typical VFX work:
@@ -211,7 +211,7 @@ This package now includes a **Linear EXR Export** node for professional HDR outp
 ### Complete HDR Workflow:
 **HDR VAE Decode** → **Linear EXR Export** → **Professional EXR files** ready for compositing in Nuke, After Effects, or other VFX software.
 
-![HDR VAE Workflow](Nodes.jpg)
+![HDR VAE Workflow](images/Nodes.jpg)
 *Correct node setup: Both nodes are essential for professional HDR output*
 
 The Linear EXR Export node will appear in the **image** category in ComfyUI.
@@ -309,7 +309,7 @@ While the fallback methods may work with other models, optimal HDR preservation 
 
 ### 🔍 **How to Verify Your Workflow is Correct**
 
-![HDR VAE Workflow](Nodes.jpg)
+![HDR VAE Workflow](images/Nodes.jpg)
 *✅ Correct workflow: HDR VAE Decode connected to Linear EXR Export*
 
 1. **Check Node Connection**: HDR VAE Decode → Linear EXR Export (not Save Image)
