@@ -9,12 +9,16 @@ A custom ComfyUI node that intelligently preserves HDR data from VAE models for 
 ## 📋 Table of Contents
 
 - [Overview](#overview)
+- [Problem Statement](#problem-statement)
 - [Technical Innovation](#technical-innovation)  
 - [Installation](#installation)
 - [Usage](#usage)
+- [Example Workflow](#example-workflow)
 - [Built-in HDR Export](#built-in-hdr-export-solution)
 - [Results & Performance](#results--performance)
 - [Technical Achievements](#technical-achievements)
+- [Compatibility](#compatibility)
+- [Troubleshooting](#troubleshooting)
 - [Development Notes](#development-notes)
 - [Contributing](#contributing)
 - [License](#license)
@@ -31,11 +35,19 @@ After extensive research and development, I've created a node that solves the fu
 
 ## Problem Statement
 
-ComfyUI's default VAE Decode node applies several limitations:
-1. **Range Clamping**: EXR outputs are constrained to 0-1 pixel values
-2. **Lost Dynamic Range**: High and low luminance information is compressed/clipped  
+ComfyUI's default image processing pipeline has several HDR-breaking limitations:
+
+### VAE Decode Issues:
+1. **Range Clamping**: VAE outputs are constrained to 0-1 pixel values  
+2. **Lost Dynamic Range**: High and low luminance information is compressed/clipped
 3. **8-bit Pipeline**: Effective output is 8-bit despite higher precision formats
 4. **Color Space Constraints**: Limited to sRGB-like color spaces
+
+### Save Image Issues:
+5. **🚨 Critical**: ComfyUI's **built-in Save Image node normalizes ALL pixel values to 0-1 range**
+6. **HDR Data Destruction**: Even if you preserve HDR in processing, Save Image destroys it during export
+7. **False EXR Support**: Claims to save EXR but actually saves 8-bit data in EXR container
+8. **VFX Incompatible**: Produces files that appear HDR but contain no extended range data
 
 ## Technical Innovation
 
@@ -109,23 +121,55 @@ The node first attempts **intelligent HDR decode** using scientific analysis of 
 
 ## Example Workflow
 
+![HDR VAE Workflow](Nodes.jpg)
+*Example ComfyUI workflow showing HDR VAE Decode connected to Linear EXR Export*
+
 For typical VFX work:
 
 1. **Connect your Flux.1 latents** to the HDR VAE Decode node
 2. **Use default "conservative" mode** for natural results, or choose "moderate" for higher dynamic range
 3. **Leave other parameters default** for most use cases
-4. **Connect output to the Linear EXR Export node** to save professional EXR files
-5. **Use in your compositing software** (Nuke, After Effects, etc.) with proper HDR handling
+4. **⚠️ CRITICAL: Connect output to the Linear EXR Export node** - DO NOT use ComfyUI's built-in Save Image node
+5. **Configure output path** (e.g., `/Test` for `output/Test/` subfolder)
+6. **Use in your compositing software** (Nuke, After Effects, etc.) with proper HDR handling
 
-The node will automatically:
+### 🚨 **IMPORTANT: Why You Must Use Linear EXR Export**
+
+**❌ ComfyUI's Built-in Save Image Node:**
+- **Automatically normalizes all pixel values to 0-1 range**
+- **Destroys HDR data above 1.0**  
+- **Clips highlights and bright regions**
+- **Converts to 8-bit even when saving as EXR**
+- **Completely defeats the purpose of HDR processing**
+
+**✅ Our Linear EXR Export Node:**
+- **Preserves full HDR range** (values above 1.0)
+- **True 32-bit float precision**
+- **Linear color space maintained**
+- **Professional VFX quality output**
+- **Smart path handling** (`/Test` → `output/Test/`)
+
+The HDR VAE Decode node will automatically:
 - Analyze the VAE's behavior
 - Apply intelligent HDR expansion to highlight regions  
 - Preserve natural image appearance
 - Output HDR data for professional workflows
 
+**⚠️ Remember: The magic happens in the combination - HDR VAE Decode generates the HDR data, but you need Linear EXR Export to save it properly!**
+
 ## Built-in HDR Export Solution
 
 This package now includes a **Linear EXR Export** node for professional HDR output:
+
+### 🚨 **Critical Difference from Built-in Save Image**
+
+| Feature | ComfyUI Save Image | Our Linear EXR Export |
+|---------|-------------------|------------------------|
+| **HDR Values** | ❌ Normalizes to 0-1 | ✅ Preserves >1.0 values |
+| **Bit Depth** | ❌ 8-bit effective | ✅ True 32-bit float |
+| **Color Space** | ❌ sRGB/Gamma | ✅ Linear maintained |
+| **VFX Ready** | ❌ No | ✅ Professional quality |
+| **HDR Workflow** | ❌ Destroys HDR data | ✅ Preserves all HDR data |
 
 ### Linear EXR Export Node Features:
 - **True 32-bit EXR export** with preserved HDR values above 1.0
@@ -144,6 +188,8 @@ This package now includes a **Linear EXR Export** node for professional HDR outp
 **HDR VAE Decode** → **Linear EXR Export** → **Professional EXR files** ready for compositing in Nuke, After Effects, or other VFX software.
 
 The Linear EXR Export node will appear in the **image** category in ComfyUI.
+
+### ⚠️ **Warning: Do NOT use ComfyUI's built-in Save Image node with HDR data - it will destroy all values above 1.0!**
 
 ### Additional HDR Export Option
 
@@ -175,6 +221,29 @@ Through this project, I solved several challenging problems:
 - **Tested With**: ComfyUI stable versions
 - **Requirements**: Python 3.8+, PyTorch, CUDA-capable GPU recommended
 - **Formats**: Outputs compatible with EXR export nodes for professional workflows
+
+## Troubleshooting
+
+### ❓ "My EXR files don't have HDR values above 1.0"
+**✅ Solution**: You're using ComfyUI's built-in Save Image node. Switch to our **Linear EXR Export** node.
+
+### ❓ "HDR data is lost when saving"  
+**✅ Solution**: ComfyUI's Save Image **always** normalizes to 0-1. Use **Linear EXR Export** instead.
+
+### ❓ "EXR files look like regular images"
+**✅ Solution**: ComfyUI Save Image creates fake EXR files with 8-bit data. Use **Linear EXR Export** for true 32-bit HDR.
+
+### ❓ "Compositing software shows no HDR range"
+**✅ Solution**: The EXR was saved with ComfyUI's Save Image. Re-export using **Linear EXR Export**.
+
+**🎯 Rule of thumb: If you want HDR, NEVER use ComfyUI's built-in Save Image node - always use Linear EXR Export!**
+
+### 🔍 **How to Verify Your Workflow is Correct**
+
+1. **Check Node Connection**: HDR VAE Decode → Linear EXR Export (not Save Image)
+2. **Look for Console Output**: Should show "HDR pixels: [number] >0" in Linear EXR Export logs
+3. **Verify File Size**: True HDR EXR files are typically 2-5MB+ for 1K images (vs <1MB for fake HDR)
+4. **Test in VFX Software**: Load in Nuke/After Effects and adjust exposure - should see extended highlights
 
 ## Development Notes
 
