@@ -1,144 +1,9 @@
 {
   "id": "2bf701f6-0403-496b-94ed-30d3998fdc95",
   "revision": 0,
-  "last_node_id": 45,
-  "last_link_id": 932,
+  "last_node_id": 47,
+  "last_link_id": 934,
   "nodes": [
-    {
-      "id": 13,
-      "type": "EmptySD3LatentImage",
-      "pos": [
-        1389.1685791015625,
-        518.603759765625
-      ],
-      "size": [
-        270,
-        106
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "width",
-          "type": "INT",
-          "widget": {
-            "name": "width"
-          },
-          "link": 13
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "widget": {
-            "name": "height"
-          },
-          "link": 14
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "links": [
-            12
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.33",
-        "Node name for S&R": "EmptySD3LatentImage",
-        "ue_properties": {
-          "version": "7.1",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        1024,
-        1024,
-        1
-      ]
-    },
-    {
-      "id": 16,
-      "type": "SaveImage",
-      "pos": [
-        3141.444580078125,
-        848.8460083007812
-      ],
-      "size": [
-        355.62274169921875,
-        282
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 76
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.35",
-        "Node name for S&R": "SaveImage",
-        "ue_properties": {
-          "version": "7.1",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "Flux/My_life_going_on/image"
-      ]
-    },
-    {
-      "id": 8,
-      "type": "FluxGuidance",
-      "pos": [
-        1750.4031982421875,
-        -181.3498992919922
-      ],
-      "size": [
-        270,
-        58
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "conditioning",
-          "type": "CONDITIONING",
-          "link": 405
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": []
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.3.33",
-        "Node name for S&R": "FluxGuidance",
-        "ue_properties": {
-          "version": "7.1",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        2.5
-      ]
-    },
     {
       "id": 9,
       "type": "ConditioningZeroOut",
@@ -151,7 +16,7 @@
         53.5
       ],
       "flags": {},
-      "order": 8,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -182,104 +47,6 @@
       "widgets_values": []
     },
     {
-      "id": 24,
-      "type": "SaveLatentEXR",
-      "pos": [
-        2559.131591796875,
-        412.9045104980469
-      ],
-      "size": [
-        270,
-        130
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 416
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "ComfyUI-HQ-Image-Save",
-        "ver": "52b4579a195727729bf768032737a67220512128",
-        "Node name for S&R": "SaveLatentEXR",
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "filename_prefix": true,
-            "version": true,
-            "start_frame": true,
-            "frame_pad": true
-          },
-          "version": "7.1",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "HDRtest/Test1/latent",
-        1,
-        1001,
-        4
-      ]
-    },
-    {
-      "id": 26,
-      "type": "HDRExportNode",
-      "pos": [
-        4738.6982421875,
-        -123.4549331665039
-      ],
-      "size": [
-        270,
-        178
-      ],
-      "flags": {},
-      "order": 16,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "hdr_image",
-          "type": "IMAGE",
-          "link": 886
-        }
-      ],
-      "outputs": [
-        {
-          "name": "filepath",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "sumitchatterjee13/Luminance-Stack-Processor",
-        "ver": "721fe7f65586015d87a444826b8dd533742c979e",
-        "Node name for S&R": "HDRExportNode",
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "filename_prefix": true,
-            "output_path": true,
-            "counter": true,
-            "format": true,
-            "bit_depth": true,
-            "compression": true
-          },
-          "version": "7.1",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "Test1",
-        "D:\\AI\\Art\\Comfy2\\ComfyUI_windows_portable\\ComfyUI\\output\\HDRtest\\Test2\\",
-        1,
-        "exr",
-        "32bit",
-        "zip"
-      ]
-    },
-    {
       "id": 10,
       "type": "VAEDecode",
       "pos": [
@@ -291,7 +58,7 @@
         46
       ],
       "flags": {},
-      "order": 10,
+      "order": 8,
       "mode": 0,
       "inputs": [
         {
@@ -310,8 +77,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            11,
-            76
+            11
           ]
         }
       ],
@@ -339,7 +105,7 @@
         426.91021728515625
       ],
       "flags": {},
-      "order": 15,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
@@ -362,121 +128,6 @@
       "widgets_values": []
     },
     {
-      "id": 45,
-      "type": "HDRVAEDecode",
-      "pos": [
-        3744.71923828125,
-        -17.856300354003906
-      ],
-      "size": [
-        270,
-        150
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "samples",
-          "type": "LATENT",
-          "link": 884
-        },
-        {
-          "name": "vae",
-          "type": "VAE",
-          "link": 932
-        }
-      ],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            885,
-            886
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "HDRVAEDecode",
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "hdr_mode": true,
-            "max_range": true,
-            "scale_factor": true,
-            "enable_negatives": true
-          },
-          "version": "7.1",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "conservative",
-        50,
-        1,
-        false
-      ]
-    },
-    {
-      "id": 12,
-      "type": "FluxResolutionNode",
-      "pos": [
-        848.4368896484375,
-        542.2630615234375
-      ],
-      "size": [
-        274.724609375,
-        214
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "width",
-          "type": "INT",
-          "links": [
-            13
-          ]
-        },
-        {
-          "name": "height",
-          "type": "INT",
-          "links": [
-            14
-          ]
-        },
-        {
-          "name": "resolution",
-          "type": "STRING",
-          "links": null
-        },
-        {
-          "name": "preview",
-          "type": "IMAGE",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfyui_controlaltai_nodes",
-        "ver": "0560cda0b232c76c95af43994464f691963ebef7",
-        "Node name for S&R": "FluxResolutionNode",
-        "ue_properties": {
-          "version": "7.1",
-          "widget_ue_connectable": {},
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "1.5",
-        "16:9 (Panorama)",
-        "64",
-        false,
-        "1:1"
-      ]
-    },
-    {
       "id": 5,
       "type": "KSampler",
       "pos": [
@@ -488,7 +139,7 @@
         474
       ],
       "flags": {},
-      "order": 9,
+      "order": 7,
       "mode": 0,
       "inputs": [
         {
@@ -526,7 +177,6 @@
           "type": "LATENT",
           "links": [
             10,
-            416,
             884
           ]
         }
@@ -563,7 +213,7 @@
         200
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -577,7 +227,6 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            405,
             410,
             415
           ]
@@ -611,7 +260,7 @@
         130
       ],
       "flags": {},
-      "order": 1,
+      "order": 0,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -652,7 +301,7 @@
         82
       ],
       "flags": {},
-      "order": 2,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -691,7 +340,7 @@
         58
       ],
       "flags": {},
-      "order": 3,
+      "order": 2,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -730,7 +379,7 @@
         130
       ],
       "flags": {},
-      "order": 4,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -774,7 +423,7 @@
         412.16790771484375
       ],
       "flags": {},
-      "order": 13,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
@@ -795,6 +444,146 @@
         }
       },
       "widgets_values": []
+    },
+    {
+      "id": 45,
+      "type": "HDRVAEDecode",
+      "pos": [
+        3744.71923828125,
+        -17.856300354003906
+      ],
+      "size": [
+        270,
+        150
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 884
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 932
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            885,
+            934
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "sumitchatterjee13/vae-decode-hdr",
+        "ver": "da517521be7ecf9fd5a07cb3de182b7c3a071735",
+        "Node name for S&R": "HDRVAEDecode",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "hdr_mode": true,
+            "max_range": true,
+            "scale_factor": true,
+            "enable_negatives": true
+          },
+          "version": "7.1",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "conservative",
+        50,
+        1,
+        false
+      ]
+    },
+    {
+      "id": 47,
+      "type": "LinearEXRExport",
+      "pos": [
+        4397.02685546875,
+        -49.76043701171875
+      ],
+      "size": [
+        270,
+        178
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "hdr_image",
+          "type": "IMAGE",
+          "link": 934
+        }
+      ],
+      "outputs": [
+        {
+          "name": "filepath",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "sumitchatterjee13/vae-decode-hdr",
+        "ver": "da517521be7ecf9fd5a07cb3de182b7c3a071735",
+        "Node name for S&R": "LinearEXRExport"
+      },
+      "widgets_values": [
+        "image",
+        "/Test",
+        1,
+        "exr",
+        "32bit",
+        "zip"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "EmptySD3LatentImage",
+      "pos": [
+        1446.2755126953125,
+        497.9817810058594
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            12
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.33",
+        "Node name for S&R": "EmptySD3LatentImage",
+        "ue_properties": {
+          "version": "7.1",
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        1664,
+        896,
+        1
+      ]
     }
   ],
   "links": [
@@ -839,38 +628,6 @@
       "LATENT"
     ],
     [
-      13,
-      12,
-      0,
-      13,
-      0,
-      "INT"
-    ],
-    [
-      14,
-      12,
-      1,
-      13,
-      1,
-      "INT"
-    ],
-    [
-      76,
-      10,
-      0,
-      16,
-      0,
-      "IMAGE"
-    ],
-    [
-      405,
-      23,
-      0,
-      8,
-      0,
-      "CONDITIONING"
-    ],
-    [
       410,
       23,
       0,
@@ -887,14 +644,6 @@
       "CONDITIONING"
     ],
     [
-      416,
-      5,
-      0,
-      24,
-      0,
-      "LATENT"
-    ],
-    [
       884,
       5,
       0,
@@ -907,14 +656,6 @@
       45,
       0,
       29,
-      0,
-      "IMAGE"
-    ],
-    [
-      886,
-      45,
-      0,
-      26,
       0,
       "IMAGE"
     ],
@@ -949,6 +690,14 @@
       45,
       1,
       "VAE"
+    ],
+    [
+      934,
+      45,
+      0,
+      47,
+      0,
+      "IMAGE"
     ]
   ],
   "groups": [],
@@ -957,10 +706,10 @@
     "ue_links": [],
     "links_added_by_ue": [],
     "ds": {
-      "scale": 0.39142513012208596,
+      "scale": 0.39142513012209146,
       "offset": [
-        599.5912535135908,
-        881.2886337758305
+        1316.8790237374928,
+        765.0972145225929
       ]
     },
     "frontendVersion": "1.25.11",
