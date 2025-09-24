@@ -291,21 +291,7 @@ While the fallback methods may work with other models, optimal HDR preservation 
 - **Software**: Nuke, After Effects, DaVinci Resolve, Blender
 - **Workflow**: VFX compositing and color grading pipelines
 
-## Troubleshooting
 
-### ❓ "My EXR files don't have HDR values above 1.0"
-**✅ Solution**: You're using ComfyUI's built-in Save Image node. Switch to our **Linear EXR Export** node.
-
-### ❓ "HDR data is lost when saving"  
-**✅ Solution**: ComfyUI's Save Image **always** normalizes to 0-1. Use **Linear EXR Export** instead.
-
-### ❓ "EXR files look like regular images"
-**✅ Solution**: ComfyUI Save Image creates fake EXR files with 8-bit data. Use **Linear EXR Export** for true 32-bit HDR.
-
-### ❓ "Compositing software shows no HDR range"
-**✅ Solution**: The EXR was saved with ComfyUI's Save Image. Re-export using **Linear EXR Export**.
-
-**🎯 Rule of thumb: If you want HDR, NEVER use ComfyUI's built-in Save Image node - always use Linear EXR Export!**
 
 ### 🔍 **How to Verify Your Workflow is Correct**
 
@@ -360,6 +346,6 @@ This project is licensed under the MIT License - see the [LICENSE](https://githu
 
 **Repository**: [https://github.com/sumitchatterjee13/vae-decode-hdr](https://github.com/sumitchatterjee13/vae-decode-hdr)  
 **Author**: Sumit Chatterjee  
-**Created**: 2024  
+**Created**: 2025  
 
 ⭐ If this project helps you, please consider giving it a star on GitHub!
