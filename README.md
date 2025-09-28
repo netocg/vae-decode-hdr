@@ -204,9 +204,30 @@ This package now includes a **Linear EXR Export** node for professional HDR outp
   - Full path → uses custom absolute/relative path
 - **Multiple bit depths**: 32-bit (maximum quality) or 16-bit (smaller files)
 - **Compression options**: ZIP, PIZ, RLE, PXR24, or none
-- **Clean file naming** with customizable prefixes and counters
+- **Auto-incrementing filenames**: Never overwrites existing files - perfect for image sequences
+- **Clean file naming** with customizable prefixes and counters  
 - **HDR verification**: Automatically verifies HDR values are preserved in saved files
 - **Seamless integration**: Designed specifically for HDR VAE Decode output
+
+### 🔄 **Auto-Incrementing Filename Feature**
+
+The Linear EXR Export node now includes intelligent filename management that prevents accidental overwrites:
+
+**How it works:**
+- If `Test_00001.exr` exists, automatically saves as `Test_00002.exr`
+- If `HDR_VAE_00005.exr` exists, automatically saves as `HDR_VAE_00006.exr`
+- **Perfect for image sequences**: Generate multiple variations without losing previous outputs
+- **Safe iterations**: Experiment with different settings without fear of overwriting good results
+
+**Examples:**
+```
+Generation 1: MyScene_00001.exr
+Generation 2: MyScene_00002.exr (automatically incremented)
+Generation 3: MyScene_00003.exr (automatically incremented)
+...and so on
+```
+
+
 
 ### Complete HDR Workflow:
 **HDR VAE Decode** → **Linear EXR Export** → **Professional EXR files** ready for compositing in Nuke, After Effects, or other VFX software.

@@ -121,15 +121,8 @@ class LinearEXRExport:
             # Create output directory if it doesn't exist
             os.makedirs(output_dir, exist_ok=True)
             
-            # Clean filename generation (NO automatic timestamps or prefixes)
-            if counter > 0:
-                # Include counter if specified
-                filename = f"{filename_prefix}_{counter:05d}.{format}"
-            else:
-                # No counter - simple filename
-                filename = f"{filename_prefix}.{format}"
-                
-            filepath = os.path.join(output_dir, filename)
+            # Smart filename generation with auto-increment to prevent overwriting
+            filepath = self._get_unique_filepath(output_dir, filename_prefix, format, counter)
             
             logger.info(f"Linear EXR Export: Saving to {filepath}")
             
@@ -302,6 +295,67 @@ class LinearEXRExport:
                 'height': 0,
                 'channels': 0
             }
+
+    def _get_unique_filepath(self, output_dir: str, filename_prefix: str, format: str, counter: int = 1) -> str:
+        """
+        Generate a unique filepath by auto-incrementing the filename if file exists.
+        Ensures no existing files are overwritten - perfect for image sequences.
+        
+        Args:
+            output_dir: Directory to save the file
+            filename_prefix: Base filename prefix
+            format: File extension (exr, hdr)
+            counter: Starting counter value (ignored if file exists)
+            
+        Returns:
+            Full path to a unique filename that doesn't exist yet
+            
+        Examples:
+            If Test_00001.exr exists, generates Test_00002.exr
+            If HDR_VAE_00005.exr exists, generates HDR_VAE_00006.exr
+        """
+        
+        # Start with the requested filename
+        if counter > 0:
+            # Use provided counter as starting point
+            test_filename = f"{filename_prefix}_{counter:05d}.{format}"
+        else:
+            # If no counter specified, start with _00001
+            test_filename = f"{filename_prefix}_00001.{format}"
+            counter = 1
+        
+        test_filepath = os.path.join(output_dir, test_filename)
+        
+        # If file doesn't exist, we can use this name
+        if not os.path.exists(test_filepath):
+            logger.info(f"✅ Unique filename: {test_filename} (doesn't exist)")
+            return test_filepath
+        
+        # File exists, need to find next available number
+        logger.info(f"⚠️ File exists: {test_filename}, finding next available...")
+        
+        # Extract the base pattern and find the next available number
+        max_attempts = 99999  # Prevent infinite loop
+        current_counter = counter + 1
+        
+        while current_counter <= max_attempts:
+            candidate_filename = f"{filename_prefix}_{current_counter:05d}.{format}"
+            candidate_filepath = os.path.join(output_dir, candidate_filename)
+            
+            if not os.path.exists(candidate_filepath):
+                logger.info(f"✅ Found unique filename: {candidate_filename}")
+                return candidate_filepath
+            
+            current_counter += 1
+        
+        # Fallback: add timestamp if we somehow exceed max attempts
+        import time
+        timestamp = int(time.time())
+        fallback_filename = f"{filename_prefix}_{timestamp}.{format}"
+        fallback_filepath = os.path.join(output_dir, fallback_filename)
+        
+        logger.warning(f"⚠️ Reached max attempts, using timestamp fallback: {fallback_filename}")
+        return fallback_filepath
 
 
 # Node class mappings for ComfyUI
