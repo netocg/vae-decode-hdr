@@ -13,16 +13,13 @@ import cv2
 import logging
 import os
 
-# Try to import imageio for HDR/EXR support
+# Try to import OpenImageIO for professional HDR/EXR support (industry standard)
 try:
-    import imageio.v3 as iio
-    IMAGEIO_AVAILABLE = True
+    import OpenImageIO as oiio
+    OIIO_AVAILABLE = True
 except ImportError:
-    try:
-        import imageio as iio
-        IMAGEIO_AVAILABLE = True
-    except ImportError:
-        IMAGEIO_AVAILABLE = False
+    OIIO_AVAILABLE = False
+    logger.warning("OpenImageIO not available - will use OpenCV fallback")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -146,27 +143,54 @@ class LinearEXRExport:
             
             # Save HDR file with TRUE bit depth control
             if format.lower() == "exr":
-                # CRITICAL: Use imageio for proper EXR bit depth control
+                # CRITICAL: Use OpenImageIO for professional EXR writing (VFX industry standard)
                 try:
-                    if IMAGEIO_AVAILABLE:
-                        # Use imageio for proper 32-bit EXR writing
+                    if OIIO_AVAILABLE:
+                        # Use OpenImageIO for professional-grade EXR writing
                         if bit_depth == "32bit":
-                            logger.info("Using imageio for TRUE 32-bit EXR writing")
-                            # Write as float32 for true 32-bit precision
-                            iio.imwrite(filepath, hdr_rgb.astype(np.float32))
-                            success = True
+                            logger.info("Using OpenImageIO for TRUE 32-bit EXR writing (VFX standard)")
+                            dtype = "float"
                         else:
-                            logger.info("Using imageio for 16-bit EXR writing")
-                            # Write as float16 for 16-bit precision
-                            iio.imwrite(filepath, hdr_rgb.astype(np.float16))
-                            success = True
+                            logger.info("Using OpenImageIO for 16-bit EXR writing")
+                            dtype = "half"
+                        
+                        # Create ImageSpec for the output
+                        height, width, channels = hdr_rgb.shape
+                        spec = oiio.ImageSpec(width, height, channels, dtype)
+                        
+                        # Set compression
+                        if compression != "none":
+                            spec.attribute("compression", compression)
+                        
+                        # Create and open the output
+                        output = oiio.ImageOutput.create(filepath)
+                        if output is None:
+                            raise RuntimeError(f"Could not create ImageOutput for {filepath}")
+                        
+                        if not output.open(filepath, spec):
+                            raise RuntimeError(f"Could not open {filepath}: {output.geterror()}")
+                        
+                        # Write the image (OpenImageIO expects float32 for "float" type)
+                        if bit_depth == "32bit":
+                            pixels = hdr_rgb.astype(np.float32)
+                        else:
+                            pixels = hdr_rgb.astype(np.float16)
+                        
+                        if not output.write_image(pixels):
+                            raise RuntimeError(f"Could not write pixels: {output.geterror()}")
+                        
+                        output.close()
+                        success = True
+                        logger.info(f"✅ Successfully wrote EXR using OpenImageIO with {bit_depth} precision")
                     else:
                         # Fallback to OpenCV (limited bit depth control)
-                        logger.warning("imageio not available - using OpenCV (limited 32-bit support)")
+                        logger.warning("OpenImageIO not available - using OpenCV (limited 32-bit support)")
+                        logger.info("💡 Install OpenImageIO for professional VFX-grade EXR support: pip install OpenImageIO")
                         success = cv2.imwrite(filepath, hdr_bgr)
                 except Exception as e:
-                    logger.error(f"imageio EXR writing failed: {e}")
-                    logger.info("Falling back to OpenCV EXR writing")
+                    error_msg = str(e)
+                    logger.error(f"OpenImageIO EXR writing failed: {error_msg}")
+                    logger.info("Falling back to OpenCV EXR writing (still preserves HDR data)")
                     success = cv2.imwrite(filepath, hdr_bgr)
                 
             elif format.lower() == "hdr":

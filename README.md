@@ -108,13 +108,20 @@ cd vae-decode-hdr
 pip install -r requirements.txt
 ```
 
+   **⚠️ Important for Professional EXR Export**: For VFX-grade EXR file writing with full bit depth control, install OpenImageIO (industry standard):
+   ```bash
+   pip install OpenImageIO
+   ```
+   OpenImageIO provides professional-grade EXR support with true 32-bit/16-bit float precision and full compression options. If not installed, the node will automatically fall back to OpenCV (which still preserves HDR data, but with limited bit depth control).
+
 3. Restart ComfyUI
 
 ### Method 2: Direct Download
 1. [Download ZIP](https://github.com/sumitchatterjee13/vae-decode-hdr/archive/refs/heads/main.zip) from GitHub
 2. Extract to `ComfyUI/custom_nodes/vae-decode-hdr/`
 3. Install dependencies: `pip install -r requirements.txt`
-4. Restart ComfyUI
+4. (Optional but recommended) Install OpenImageIO for professional EXR support: `pip install OpenImageIO`
+5. Restart ComfyUI
 
 The nodes should appear in the **latent** category as "HDR VAE Decode" and in the **image** category as "Linear EXR Export".
 
@@ -196,18 +203,20 @@ This package now includes a **Linear EXR Export** node for professional HDR outp
 | **HDR Workflow** | ❌ Destroys HDR data | ✅ Preserves all HDR data |
 
 ### Linear EXR Export Node Features:
+- **OpenImageIO-powered**: Uses industry-standard VFX library for professional-grade EXR writing
 - **True 32-bit EXR export** with preserved HDR values above 1.0
-- **Professional VFX quality** - maintains linear color space
+- **Professional VFX quality** - maintains linear color space with full OpenEXR specification compliance
 - **Smart path handling**: 
   - Empty path → saves to `ComfyUI/output/`
   - `/subfolder` → saves to `ComfyUI/output/subfolder/` 
   - Full path → uses custom absolute/relative path
-- **Multiple bit depths**: 32-bit (maximum quality) or 16-bit (smaller files)
-- **Compression options**: ZIP, PIZ, RLE, PXR24, or none
+- **Multiple bit depths**: 32-bit float or 16-bit half precision (smaller files)
+- **Compression options**: ZIP, PIZ, RLE, PXR24, or none (via OpenImageIO)
 - **Auto-incrementing filenames**: Never overwrites existing files - perfect for image sequences
 - **Clean file naming** with customizable prefixes and counters  
 - **HDR verification**: Automatically verifies HDR values are preserved in saved files
 - **Seamless integration**: Designed specifically for HDR VAE Decode output
+- **Automatic fallback**: Uses OpenCV if OpenImageIO is not installed (still preserves HDR data)
 
 ### 🔄 **Auto-Incrementing Filename Feature**
 
@@ -324,6 +333,54 @@ While the fallback methods may work with other models, optimal HDR preservation 
 3. **Verify File Size**: True HDR EXR files are typically 2-5MB+ for 1K images (vs <1MB for fake HDR)
 4. **Test in VFX Software**: Load in Nuke/After Effects and adjust exposure - should see extended highlights
 5. **Compare with Examples**: Check `/images/Sample_builtin_vae_decode.png` vs `/images/Sample_hdr_vae_decode.exr` to see the quality difference
+
+## Troubleshooting
+
+### OpenImageIO Installation Issues
+
+**Windows Users:**
+```bash
+pip install OpenImageIO
+```
+If you encounter build errors, you can try:
+- Download pre-built wheels from [PyPI](https://pypi.org/project/OpenImageIO/)
+- Use conda: `conda install -c conda-forge openimageio`
+
+**Linux Users:**
+```bash
+pip install OpenImageIO
+# Or use your package manager:
+sudo apt-get install python3-openimageio  # Debian/Ubuntu
+sudo yum install python3-OpenImageIO      # RHEL/CentOS
+```
+
+**Mac Users:**
+```bash
+pip install OpenImageIO
+# Or use Homebrew:
+brew install openimageio
+pip install OpenImageIO
+```
+
+**If OpenImageIO fails to install:**
+- The node will automatically fall back to OpenCV for EXR writing
+- HDR data is still preserved with the OpenCV fallback
+- You just won't have access to advanced compression options and precise bit depth control
+- Check console logs for fallback messages
+
+### Common Issues
+
+**Problem**: "OpenImageIO not available" warning in console  
+**Solution**: Install OpenImageIO using the commands above, or ignore if using OpenCV fallback
+
+**Problem**: EXR files don't show HDR values in Nuke/After Effects  
+**Solution**: Make sure you're using the Linear EXR Export node, not ComfyUI's built-in Save Image node
+
+**Problem**: Memory errors during processing  
+**Solution**: Reduce resolution or adjust batch size, HDR processing requires more VRAM
+
+**Problem**: Colors look different than standard output  
+**Solution**: This is expected - the node preserves linear color space. Apply proper color management in your compositing software
 
 ## Development Notes
 

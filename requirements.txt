@@ -4,10 +4,7 @@ pillow>=8.0.0
 opencv-python>=4.5.0
 einops>=0.4.0
 
-# Optional dependencies for advanced formats
-OpenEXR>=1.3.9; platform_system != "Windows"
-Imath>=0.0.2; platform_system != "Windows"
-
-# For Windows EXR support (alternative)
-imageio>=2.25.0
-imageio-ffmpeg>=0.4.8
+# Optional dependencies for professional VFX workflows
+# OpenImageIO is the industry-standard library for HDR/EXR file handling
+# Provides true 32-bit/16-bit float precision with full compression support
+OpenImageIO>=2.4.0  # Professional VFX-grade EXR support (cross-platform)
