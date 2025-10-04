@@ -3,6 +3,11 @@ ComfyUI HDR VAE Decode Node
 
 A custom VAE decode node that preserves full dynamic range and bit depth
 capabilities for professional VFX workflows.
+
+Author: Sumit Chatterjee
+Contributor: Antonio Neto
+Version: 1.1.5
+License: MIT
 """
 
 # HDR VAE Decode package with EXR export functionality

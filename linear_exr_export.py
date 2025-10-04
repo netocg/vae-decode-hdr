@@ -13,13 +13,16 @@ import cv2
 import logging
 import os
 
-# Try to import OpenImageIO for professional HDR/EXR support (industry standard)
+# Try to import imageio for HDR/EXR support
 try:
-    import OpenImageIO as oiio
-    OIIO_AVAILABLE = True
+    import imageio.v3 as iio
+    IMAGEIO_AVAILABLE = True
 except ImportError:
-    OIIO_AVAILABLE = False
-    logger.warning("OpenImageIO not available - will use OpenCV fallback")
+    try:
+        import imageio as iio
+        IMAGEIO_AVAILABLE = True
+    except ImportError:
+        IMAGEIO_AVAILABLE = False
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -48,7 +51,7 @@ class LinearEXRExport:
             "optional": {
                 "output_path": ("STRING", {"default": "", "tooltip": "Output path: Empty=default ComfyUI/output, /subfolder=output/subfolder, or full custom path"}),
                 "counter": ("INT", {"default": 1, "min": 0, "max": 99999, "step": 1, "tooltip": "Frame/sequence counter"}),
-                "format": (["exr", "hdr"], {"default": "exr", "tooltip": "HDR file format"}),
+                "format": (["exr", "hdr"], {"default": "hdr", "tooltip": "HDR file format"}),
                 "bit_depth": (["16bit", "32bit"], {"default": "32bit", "tooltip": "EXR precision: 32bit = maximum quality, 16bit = smaller files"}),
                 "compression": (["none", "rle", "zip", "piz", "pxr24"], {"default": "zip", "tooltip": "EXR compression type"}),
             }
@@ -118,8 +121,15 @@ class LinearEXRExport:
             # Create output directory if it doesn't exist
             os.makedirs(output_dir, exist_ok=True)
             
-            # Smart filename generation with auto-increment to prevent overwriting
-            filepath = self._get_unique_filepath(output_dir, filename_prefix, format, counter)
+            # Clean filename generation (NO automatic timestamps or prefixes)
+            if counter > 0:
+                # Include counter if specified
+                filename = f"{filename_prefix}_{counter:05d}.{format}"
+            else:
+                # No counter - simple filename
+                filename = f"{filename_prefix}.{format}"
+                
+            filepath = os.path.join(output_dir, filename)
             
             logger.info(f"Linear EXR Export: Saving to {filepath}")
             
@@ -143,54 +153,27 @@ class LinearEXRExport:
             
             # Save HDR file with TRUE bit depth control
             if format.lower() == "exr":
-                # CRITICAL: Use OpenImageIO for professional EXR writing (VFX industry standard)
+                # CRITICAL: Use imageio for proper EXR bit depth control
                 try:
-                    if OIIO_AVAILABLE:
-                        # Use OpenImageIO for professional-grade EXR writing
+                    if IMAGEIO_AVAILABLE:
+                        # Use imageio for proper 32-bit EXR writing
                         if bit_depth == "32bit":
-                            logger.info("Using OpenImageIO for TRUE 32-bit EXR writing (VFX standard)")
-                            dtype = "float"
+                            logger.info("Using imageio for TRUE 32-bit EXR writing")
+                            # Write as float32 for true 32-bit precision
+                            iio.imwrite(filepath, hdr_rgb.astype(np.float32))
+                            success = True
                         else:
-                            logger.info("Using OpenImageIO for 16-bit EXR writing")
-                            dtype = "half"
-                        
-                        # Create ImageSpec for the output
-                        height, width, channels = hdr_rgb.shape
-                        spec = oiio.ImageSpec(width, height, channels, dtype)
-                        
-                        # Set compression
-                        if compression != "none":
-                            spec.attribute("compression", compression)
-                        
-                        # Create and open the output
-                        output = oiio.ImageOutput.create(filepath)
-                        if output is None:
-                            raise RuntimeError(f"Could not create ImageOutput for {filepath}")
-                        
-                        if not output.open(filepath, spec):
-                            raise RuntimeError(f"Could not open {filepath}: {output.geterror()}")
-                        
-                        # Write the image (OpenImageIO expects float32 for "float" type)
-                        if bit_depth == "32bit":
-                            pixels = hdr_rgb.astype(np.float32)
-                        else:
-                            pixels = hdr_rgb.astype(np.float16)
-                        
-                        if not output.write_image(pixels):
-                            raise RuntimeError(f"Could not write pixels: {output.geterror()}")
-                        
-                        output.close()
-                        success = True
-                        logger.info(f"✅ Successfully wrote EXR using OpenImageIO with {bit_depth} precision")
+                            logger.info("Using imageio for 16-bit EXR writing")
+                            # Write as float16 for 16-bit precision
+                            iio.imwrite(filepath, hdr_rgb.astype(np.float16))
+                            success = True
                     else:
                         # Fallback to OpenCV (limited bit depth control)
-                        logger.warning("OpenImageIO not available - using OpenCV (limited 32-bit support)")
-                        logger.info("💡 Install OpenImageIO for professional VFX-grade EXR support: pip install OpenImageIO")
+                        logger.warning("imageio not available - using OpenCV (limited 32-bit support)")
                         success = cv2.imwrite(filepath, hdr_bgr)
                 except Exception as e:
-                    error_msg = str(e)
-                    logger.error(f"OpenImageIO EXR writing failed: {error_msg}")
-                    logger.info("Falling back to OpenCV EXR writing (still preserves HDR data)")
+                    logger.error(f"imageio EXR writing failed: {e}")
+                    logger.info("Falling back to OpenCV EXR writing")
                     success = cv2.imwrite(filepath, hdr_bgr)
                 
             elif format.lower() == "hdr":
@@ -319,67 +302,6 @@ class LinearEXRExport:
                 'height': 0,
                 'channels': 0
             }
-
-    def _get_unique_filepath(self, output_dir: str, filename_prefix: str, format: str, counter: int = 1) -> str:
-        """
-        Generate a unique filepath by auto-incrementing the filename if file exists.
-        Ensures no existing files are overwritten - perfect for image sequences.
-        
-        Args:
-            output_dir: Directory to save the file
-            filename_prefix: Base filename prefix
-            format: File extension (exr, hdr)
-            counter: Starting counter value (ignored if file exists)
-            
-        Returns:
-            Full path to a unique filename that doesn't exist yet
-            
-        Examples:
-            If Test_00001.exr exists, generates Test_00002.exr
-            If HDR_VAE_00005.exr exists, generates HDR_VAE_00006.exr
-        """
-        
-        # Start with the requested filename
-        if counter > 0:
-            # Use provided counter as starting point
-            test_filename = f"{filename_prefix}_{counter:05d}.{format}"
-        else:
-            # If no counter specified, start with _00001
-            test_filename = f"{filename_prefix}_00001.{format}"
-            counter = 1
-        
-        test_filepath = os.path.join(output_dir, test_filename)
-        
-        # If file doesn't exist, we can use this name
-        if not os.path.exists(test_filepath):
-            logger.info(f"✅ Unique filename: {test_filename} (doesn't exist)")
-            return test_filepath
-        
-        # File exists, need to find next available number
-        logger.info(f"⚠️ File exists: {test_filename}, finding next available...")
-        
-        # Extract the base pattern and find the next available number
-        max_attempts = 99999  # Prevent infinite loop
-        current_counter = counter + 1
-        
-        while current_counter <= max_attempts:
-            candidate_filename = f"{filename_prefix}_{current_counter:05d}.{format}"
-            candidate_filepath = os.path.join(output_dir, candidate_filename)
-            
-            if not os.path.exists(candidate_filepath):
-                logger.info(f"✅ Found unique filename: {candidate_filename}")
-                return candidate_filepath
-            
-            current_counter += 1
-        
-        # Fallback: add timestamp if we somehow exceed max attempts
-        import time
-        timestamp = int(time.time())
-        fallback_filename = f"{filename_prefix}_{timestamp}.{format}"
-        fallback_filepath = os.path.join(output_dir, fallback_filename)
-        
-        logger.warning(f"⚠️ Reached max attempts, using timestamp fallback: {fallback_filename}")
-        return fallback_filepath
 
 
 # Node class mappings for ComfyUI

@@ -2,6 +2,10 @@
 Simple HDR VAE Decode
 
 Simple VAE decode that preserves wider dynamic range (0-50) without normalization to 0-1.
+Author: Sumit Chatterjee
+Contributor: Antonio Neto
+  Version: 1.1.5
+Semantic Versioning: MAJOR.MINOR.PATCH
 """
 
 import torch
@@ -41,8 +45,9 @@ class HDRVAEDecode:
                 "vae": ("VAE",),
             },
             "optional": {
-                "hdr_mode": (["conservative", "moderate", "exposure", "aggressive"], {"default": "conservative"}),
-                "max_range": ("FLOAT", {"default": 50.0, "min": 1.0, "max": 1000.0, "step": 1.0}),
+                "hdr_mode": (["conservative", "moderate", "exposure",  "adaptive", "aggressive", "Antonio_HDR"],
+                             {"default": "Antonio_HDR"}),
+                "max_range": ("FLOAT", {"default": 488.0, "min": 1.0, "max": 65504.0, "step": 1.0}),
                 "scale_factor": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "enable_negatives": ("BOOLEAN", {"default": False}),
             }
@@ -58,7 +63,7 @@ class HDRVAEDecode:
         samples: Dict[str, torch.Tensor],
         vae: Any,
         hdr_mode: str = "moderate",
-        max_range: float = 50.0,
+        max_range: float = 2.0,
         scale_factor: float = 1.0,
         enable_negatives: bool = False,
     ) -> Tuple[torch.Tensor]:
@@ -68,7 +73,8 @@ class HDRVAEDecode:
         HDR Modes:
         - conservative: Gentle 1.5x expansion, safest for general use
         - moderate: 3x smart expansion, balanced quality/range (default)
-        - exposure: Natural exposure-based HDR for compositing workflows  
+        - exposure: Natural exposure-based HDR for compositing workflows
+        - adaptive: Natural exposure-based HDR that uses the full mathematical recovery, maximum range as a base.
         - aggressive: Full mathematical recovery, maximum range
         
         Features smart highlight expansion preserving base image perceptual quality.
@@ -836,125 +842,6 @@ class HDRVAEDecode:
             
             return h
 
-        def smart_bypass_decode_old(self, vae, latent):
-            """Smart bypass - let VAE do its job, skip only conv_out."""
-            
-            self.logger.info("🧠 SMART bypass - process normally, skip only conv_out")
-            
-            decoder = vae.first_stage_model.decoder
-        
-        with torch.inference_mode():
-            # Match device and dtype
-            if hasattr(decoder, 'conv_in'):
-                device = next(decoder.conv_in.parameters()).device
-                dtype = next(decoder.conv_in.parameters()).dtype
-                latent = latent.to(device=device, dtype=dtype)
-                self.logger.info(f"🔧 Converted to {device}, {dtype}")
-            
-            # Input conv
-            h = decoder.conv_in(latent)
-            self.logger.info(f"After conv_in: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
-            # Process middle blocks (skip only attention)
-            if hasattr(decoder, 'mid'):
-                h = decoder.mid.block_1(h)
-                self.logger.info(f"After mid.block_1: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-                
-                # Skip attention to avoid hangs
-                self.logger.info("🚫 SKIPPING mid.attn_1 (attention) to avoid hangs")
-                
-                h = decoder.mid.block_2(h)
-                self.logger.info(f"After mid.block_2: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
-            # INSPECT the first up block structure to understand the architecture
-            if hasattr(decoder, 'up') and len(decoder.up) > 0:
-                first_up = decoder.up[0]
-                self.logger.info("🔍 DETAILED INSPECTION of up[0] to find channel reduction:")
-                
-                # Check ALL attributes and modules
-                for name in ['upsample', 'attn', 'block']:
-                    if hasattr(first_up, name):
-                        attr = getattr(first_up, name)
-                        self.logger.info(f"  up[0].{name}: {type(attr)}")
-                        
-                        if hasattr(attr, 'weight'):
-                            self.logger.info(f"    {name} weight shape: {attr.weight.shape}")
-                        elif hasattr(attr, '__len__') and name != 'block':
-                            # Could be a module list
-                            for i, sub_attr in enumerate(attr):
-                                if hasattr(sub_attr, 'weight'):
-                                    self.logger.info(f"    {name}[{i}] weight shape: {sub_attr.weight.shape}")
-                
-                # Check if there's a module that handles 512 → 256 reduction
-                self.logger.info("🎯 SEARCHING for 512 → 256 channel reduction module...")
-                for name, module in first_up.named_children():
-                    self.logger.info(f"  Found module: {name} -> {type(module)}")
-                    if hasattr(module, 'weight'):
-                        weight_shape = module.weight.shape
-                        self.logger.info(f"    Weight shape: {weight_shape}")
-                        if len(weight_shape) >= 2 and weight_shape[1] == 512:
-                            self.logger.info(f"    🎯 FOUND 512-input module: {name} - {weight_shape}")
-                
-                self.logger.info("🧪 Testing CORRECT channel reduction order...")
-                
-            # Process ALL up blocks properly - they handle channel reduction via their sub-modules
-            # Up blocks contain: blocks (ResNet) + upsample (transposed conv for 512->256 + spatial)
-            if hasattr(decoder, 'up'):
-                for i, up_block in enumerate(decoder.up):
-                    self.logger.info(f"Processing up[{i}] components (channel reduction + spatial upsampling)...")
-                    
-                    # Process resnet blocks in this up layer
-                    if hasattr(up_block, 'block'):
-                        for j, block in enumerate(up_block.block):
-                            try:
-                                h = block(h)
-                                self.logger.info(f"  up[{i}].block[{j}]: shape={h.shape}, range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-                            except Exception as e:
-                                self.logger.error(f"  up[{i}].block[{j}] FAILED: {str(e)}")
-                                self.logger.info(f"  Input shape was: {h.shape}")
-                                raise e
-                    
-                    # Handle upsampling (this does the critical 512->256 channel reduction)
-                    if hasattr(up_block, 'upsample') and up_block.upsample is not None:
-                        try:
-                            h = up_block.upsample(h)
-                            self.logger.info(f"  up[{i}].upsample: shape={h.shape}, range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}] 🔧 Channel reduction here!")
-                        except Exception as e:
-                            self.logger.error(f"  up[{i}].upsample FAILED: {str(e)}")
-                            self.logger.info(f"  Input shape was: {h.shape}")
-                            raise e
-                    
-                    self.logger.info(f"✅ Completed up[{i}]: shape={h.shape}, range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
-            # Apply final normalization and activation BEFORE conv_out
-            if hasattr(decoder, 'norm_out'):
-                h = decoder.norm_out(h)
-                self.logger.info(f"After norm_out: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
-            h = torch.nn.functional.silu(h)
-            self.logger.info(f"After SiLU: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
-            # SKIP ONLY conv_out - this is what clamps to 0-1!
-            self.logger.info("🎯 SKIPPING conv_out (the HDR killer) - preserving full range!")
-            
-            # At this point h should be the right shape and channels for the final output
-            # The up blocks should have handled all the channel reductions properly
-            
-            # Stats
-            final_min = float(torch.min(h))
-            final_max = float(torch.max(h))
-            hdr_pixels = int(torch.sum(h > 1.0))
-            negative_pixels = int(torch.sum(h < 0.0))
-            self.logger.info(f"🧠 SMART BYPASS OUTPUT: range=[{final_min:.3f}, {final_max:.3f}]")
-            self.logger.info(f"   📊 HDR pixels (>1.0): {hdr_pixels}, Negative pixels: {negative_pixels}")
-            
-            # Convert to float32 for ComfyUI
-            if h.dtype != torch.float32:
-                h = h.to(dtype=torch.float32)
-                self.logger.info(f"🔧 Converted output to float32")
-            
-            return h
-
     def bypass_conv_out_decode(self, vae, latent):
         """Original bypass - kept for fallback."""
         # Delegate to smart bypass for now
@@ -1121,10 +1008,10 @@ class HDRVAEDecode:
         
         # Limit exposure to reasonable range
         exposure_map = torch.clamp(exposure_map, min=0, max=max_stops)
-        
+
         # Apply exposure compensation to standard output
         hdr_output = standard_output * torch.pow(2.0, exposure_map)
-        
+
         # Reasonable HDR range for compositing
         final_result = torch.clamp(hdr_output, min=0, max=10)
         
@@ -1141,9 +1028,10 @@ class HDRVAEDecode:
         Intelligent HDR decode with multiple modes for different use cases.
         
         Modes:
-        - conservative: 1.5x max, gentle expansion
-        - moderate: 3x max with smart expansion  
+        - conservative: 1.0x max, gentle expansion
+        - moderate: 4.0x max with smart expansion
         - aggressive: Full mathematical recovery
+        - adaptive: Natural exposure-based HDR that uses the full mathematical recovery, maximum range as a base.
         - exposure: Exposure-based natural HDR
         """
         
@@ -1197,48 +1085,90 @@ class HDRVAEDecode:
         
         self.logger.info(f"📊 BASE (standard): range=[{base_min:.3f}, {base_max:.3f}]")
         self.logger.info(f"📊 PRE-CONV_OUT: range=[{pre_min:.3f}, {pre_max:.3f}]")
-        
+        # default result as a fallback
+        final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=1.0)
         if hdr_mode == "conservative":
             # Conservative: 1.5x max with gentle expansion
-            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=0.5)
-            final_result = torch.clamp(final_result, 0, 1.5)
-            self.logger.info("🟢 CONSERVATIVE mode: Gentle 1.5x expansion")
-            
+            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=2.0)
+            final_result = torch.clamp(final_result, 0, 2.0)
+            self.logger.info("🟢 CONSERVATIVE mode: Gentle 2.0x expansion")
+
         elif hdr_mode == "moderate":
             # Moderate: Smart expansion with better tone mapping
-            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=2.0)
+            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=3.0)
             final_result = torch.clamp(final_result, 0, 3.0)
-            self.logger.info("🟡 MODERATE mode: 3x smart expansion")
-            
+            self.logger.info("🟡 MODERATE mode: 3.0x smart expansion")
+
         elif hdr_mode == "exposure":
             # Exposure-based natural HDR
             final_result = self.exposure_based_hdr(standard_result, pre_conv_out, max_stops=2.5)
-            self.logger.info("📸 EXPOSURE mode: Natural exposure-based HDR")
-            
-        elif hdr_mode == "aggressive":
-            # Aggressive: Full inverse sigmoid recovery (original approach)
-            self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
-            
+
+        elif hdr_mode == "adaptive":
+            # Adaptive: Starts with full inverse sigmoid recovery (original approach)
+            self.logger.info("📸 ADAPTIVE mode: Natural exposure-based HDR based from the full mathematical recovery")
             if abs(analysis_result['post_stats']['max'] - 1.0) < 1e-3:
                 # Apply inverse sigmoid
                 recovered = self.inverse_sigmoid(standard_result)
-                
+
                 # Scale back to approximate original range
                 pre_stats = analysis_result['pre_stats']
                 original_range = pre_stats['max'] - pre_stats['min']
                 original_offset = pre_stats['min']
-                
+
+                recovered_normalized = (recovered - torch.min(recovered)) / (
+                        torch.max(recovered) - torch.min(recovered))
+                map_recovered = recovered_normalized * original_range + original_offset
+                exposure_map_recovered = torch.log2(torch.clamp(map_recovered, min=0.001))
+                exposure_hdr = torch.log2(torch.clamp(standard_result, min=0.001))
+                exposure_hdr = torch.pow(2.0, exposure_hdr)
+
+                # Apply exposure compensation to standard output
+                final_result = exposure_hdr * exposure_map_recovered
+        elif hdr_mode == "aggressive":
+            # Aggressive: Full inverse sigmoid recovery (original approach)
+            self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
+
+            if abs(analysis_result['post_stats']['max'] - 1.0) < 1e-3:
+                # Apply inverse sigmoid
+                recovered = self.inverse_sigmoid(standard_result)
+
+                # Scale back to approximate original range
+                pre_stats = analysis_result['pre_stats']
+                original_range = pre_stats['max'] - pre_stats['min']
+                original_offset = pre_stats['min']
+
                 recovered_normalized = (recovered - torch.min(recovered)) / (torch.max(recovered) - torch.min(recovered))
                 final_result = recovered_normalized * original_range + original_offset
-            else:
-                # Fallback to smart expansion
-                final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=4.0)
-                
-        else:
-            self.logger.warning(f"⚠️ Unknown HDR mode '{hdr_mode}', using moderate")
-            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=2.0)
-        
+                exposure_map = torch.log2(torch.clamp(final_result, min=0.001))
+                final_result = standard_result * torch.pow(2.0, exposure_map)
+        elif hdr_mode == "Antonio_HDR":
+            self.logger.info("🔴 Antonio_HDR mode")
+            if abs(analysis_result['post_stats']['max'] - 1.0) < 1e-3:
+                # Apply inverse sigmoid
+                recovered = self.inverse_sigmoid(standard_result)
+
+                # Scale back to approximate original range
+                pre_stats = analysis_result['pre_stats']
+                original_range = pre_stats['max'] - pre_stats['min']
+                original_offset = pre_stats['min']
+
+                recovered_normalized = (recovered - torch.min(recovered)) / (
+                        torch.max(recovered) - torch.min(recovered))
+                map_recovered = recovered_normalized * original_range + original_offset
+                map_recovered = torch.log2(torch.clamp(map_recovered, min=0.001))
+                aggressive = torch.pow(2.0, map_recovered)
+                exposure_hdr = torch.log2(torch.clamp(standard_result, min=0.001))
+                exposure_hdr = torch.pow(2.0, exposure_hdr)
+
+                # Apply exposure compensation to standard output
+                adaptive = standard_result * exposure_hdr * aggressive
+                aggressive = standard_result * aggressive
+                # Fine tune to better fit values from multiple exposures bracketing are converted to HDR
+                final_result = ((1.0 - standard_result) * aggressive * 0.5) + (
+                            0.396 * standard_result * adaptive * aggressive)
+
         return final_result
+
 
     def simple_bypass_decode(self, vae, latent):
         """Simpler bypass that skips attention to avoid hangs."""
