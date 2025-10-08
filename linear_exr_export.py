@@ -5,7 +5,7 @@ Exports HDR images to EXR/HDR format with full dynamic range preservation
 Extracted from Luminance Stack Processor for HDR VAE Decode workflow
 Author: Sumit Chatterjee (adapted for HDR VAE Decode)
 Contributor: Antonio Neto (adapted for HDR VAE Decode)
-Version: 1.1.1 (Workflow Saving Fix)
+Version: 1.1.4 (Improved verification by prioritizing pyexr for reading)
 """
 
 import numpy as np
@@ -16,6 +16,7 @@ import logging
 import os
 import re
 from glob import glob
+import traceback # Ensure traceback is available for error logging
 
 # Try to import imageio for HDR/EXR support
 try:
@@ -28,7 +29,14 @@ except ImportError:
     except ImportError:
         IMAGEIO_AVAILABLE = False
 
-# Set up logging (basic configuration should ideally be done once at the module level)
+# Try to import pyexr for dedicated EXR support (Recommended)
+try:
+    import pyexr
+    PYEXR_AVAILABLE = True
+except ImportError:
+    PYEXR_AVAILABLE = False
+
+# Set up logging
 logger = logging.getLogger(__name__)
 
 
@@ -69,8 +77,6 @@ def get_highest_numbered_file(directory, prefix):
 
     return max_num
 
-# Removed the faulty 'write_workflow' function
-
 
 class LinearEXRExport:
     """
@@ -89,12 +95,12 @@ class LinearEXRExport:
                 "filename_prefix": ("STRING", {"default": "comfyUI", "tooltip": "Base filename (without extension)"}),
             },
             "optional": {
-                "versioning": ("BOOLEAN", {"default": False}),
-                "frame_sequence": ("BOOLEAN", {"default": False}),
+                "versioning": ("BOOLEAN", {"default": False, "tooltip": "Incremental versioning save. adding v001, v002... to it's file name"}),
+                "frame_sequence": ("BOOLEAN", {"default": False, "tooltip": "Save animation into multiple frames 1001, 1002..."}),
                 "start_frame": ("INT", {"default": 1001, "min": 0, "max": 99999999}),
                 "frame_pad": ("INT", {"default": 4, "min": 1, "max": 8}),
                 "output_path": ("STRING", {"default": "/HDR", "tooltip": "Output path: Empty=default ComfyUI/output, /subfolder=output/subfolder, or full custom path"}),
-                "format": (["exr", "hdr"], {"default": "hdr", "tooltip": "HDR file format"}),
+                "format": (["exr", "hdr"], {"default": "exr", "tooltip": "file format"}),
                 "bit_depth": (["16bit", "32bit"], {"default": "16bit", "tooltip": "EXR precision: 32bit = maximum quality, 16bit = smaller files"}),
                 "compression": (["none", "rle", "zip", "piz", "pxr24"], {"default": "zip", "tooltip": "EXR compression type"}),
                 "save_workflow": ("BOOLEAN", {"default": False, "tooltip": "Saves the workflow JSON to a sidecar file next to the HDR image"}),
@@ -140,36 +146,83 @@ class LinearEXRExport:
                    compression: str, logger) -> bool:
         """
         Handles saving a single HDR image (frame) to EXR or HDR format.
-        ... (method body unchanged) ...
+        Now prioritizes pyexr, then imageio, then cv2.
         """
         success = False
 
         if format.lower() == "exr":
-            try:
-                if IMAGEIO_AVAILABLE:
-                    # Use imageio for proper EXR control
-                    if bit_depth == "32bit":
-                        logger.info("Using imageio for TRUE 32-bit EXR writing.")
-                        iio.imwrite(filepath, hdr_rgb.astype(np.float32), compression=compression)
-                    else:
-                        logger.info("Using imageio for 16-bit EXR writing.")
-                        iio.imwrite(filepath, hdr_rgb.astype(np.float16), compression=compression)
+            # Determine the target numpy dtype based on bit depth
+            target_dtype = np.float32 if bit_depth == "32bit" else np.float16
+
+            # --- 1. Attempt using pyexr (Most Robust) ---
+            if PYEXR_AVAILABLE:
+                try:
+                    logger.info(f"Attempting pyexr EXR write with compression='{compression}' and dtype='{target_dtype}'.")
+
+                    # pyexr expects the data to be in the (H, W, C) format, which hdr_rgb is.
+                    pyexr.write(
+                        filepath,
+                        hdr_rgb.astype(target_dtype),
+                        compression=compression
+                    )
                     success = True
-                else:
-                    # Fallback to OpenCV
-                    logger.warning("imageio not available. Using OpenCV (limited 32-bit support).")
-                    success = cv2.imwrite(filepath, hdr_bgr)
-            except Exception as e:
-                logger.error(f"imageio EXR writing failed: {e}. Falling back to OpenCV.")
+                    return success
+                except Exception as e:
+                    logger.error(f"pyexr EXR write failed: {e}. Falling back.")
+
+            # --- 2. Attempt using imageio (Failing in user's environment) ---
+            if IMAGEIO_AVAILABLE:
+                try:
+                    logger.info(f"Attempting imageio EXR write with compression='{compression}' and dtype='{target_dtype}'.")
+
+                    # Try writing with all requested arguments
+                    iio.imwrite(
+                        filepath,
+                        hdr_rgb.astype(target_dtype),
+                        compression=compression
+                    )
+                    success = True
+                    return success
+
+                except (TypeError, ValueError) as e:
+                    # Catch the specific error about incompatible arguments (like PyAVPlugin)
+                    logger.warning(f"imageio EXR write failed (Error: {e}). Retrying without 'compression' argument.")
+                    try:
+                        # Attempt to save without the compression argument
+                        iio.imwrite(filepath, hdr_rgb.astype(target_dtype))
+                        success = True
+                        return success
+                    except Exception as e2:
+                        logger.error(f"imageio retry without compression failed: {e2}. Falling back.")
+
+                except Exception as e:
+                    logger.error(f"imageio EXR write failed (General Error): {e}. Falling back.")
+
+            # --- 3. Fallback to OpenCV (cv2) ---
+            logger.warning("Falling back to OpenCV (cv2) for EXR save.")
+            try:
+                # OpenCV handles saving 3-channel EXR (requires BGR for cv2)
                 success = cv2.imwrite(filepath, hdr_bgr)
 
+                # Check explicitly if cv2.imwrite failed (returns False)
+                if not success:
+                    logger.error("OpenCV cv2.imwrite returned False. This commonly indicates that the required OpenEXR codec is missing or incompatible in your OpenCV build.")
+
+            except Exception as e_cv:
+                logger.error(f"OpenCV EXR writing failed (Exception raised): {e_cv}")
+
         elif format.lower() == "hdr":
-            # Save as Radiance HDR format (always 32-bit RGBE via cv2)
-            logger.info("Saving as Radiance HDR format (32-bit RGBE).")
+            # --- 1. Radiance HDR (Always cv2) ---
+            logger.info("Saving as Radiance HDR format (32-bit RGBE) via OpenCV.")
             success = cv2.imwrite(filepath, hdr_bgr)
 
         else:
             logger.error(f"Unsupported format: {format}")
+
+        if success:
+            logger.info(f"Successfully saved file: {filepath}")
+        else:
+            logger.error(f"Final save failed for file: {filepath}")
 
         return success
 
@@ -178,7 +231,7 @@ class LinearEXRExport:
                           output_path: str = "", start_frame: int = 1, frame_pad: int = 4, versioning: bool = True,
                           frame_sequence: bool = False, format: str = "hdr",  bit_depth: str = "16bit",
                           compression: str = "zip", save_workflow: bool = False,
-                          prompt: dict = None, extra_pnginfo: dict = None): # ADDED extra_pnginfo
+                          prompt: dict = None, extra_pnginfo: dict = None):
         """
         Export HDR image with clean filename interface and smart path handling
         Designed specifically for HDR VAE Decode workflow
@@ -196,6 +249,9 @@ class LinearEXRExport:
 
             logger.info(f"Linear EXR Export: Input range [{hdr_array_initial.min():.6f}, {hdr_array_initial.max():.6f}]")
             logger.info(f"Linear EXR Export: Shape {hdr_array_initial.shape}, dtype {hdr_array_initial.dtype}")
+
+            if not PYEXR_AVAILABLE:
+                logger.warning("pyexr not found. Install with 'pip install pyexr' for the most reliable EXR export.")
 
             # Check for HDR data
             hdr_pixels = int(np.sum(hdr_array_initial > 1.0))
@@ -280,13 +336,14 @@ class LinearEXRExport:
                 # Call the helper method for saving the current frame
                 success = self._save_file(
                     filepath,
-                    current_hdr_rgb,  # Current frame RGB (for imageio)
+                    current_hdr_rgb,  # Current frame RGB (for pyexr/imageio)
                     current_hdr_bgr,  # Current frame BGR (for cv2)
                     format, bit_depth, compression, logger
                 )
 
                 if not success:
-                    raise RuntimeError(f"Failed to save HDR file for frame {frame_number}: {filepath}")
+                    # Reraise the exception for ComfyUI to catch
+                    raise RuntimeError(f"Failed to save {format} file: {filepath}")
 
                 # --- WORKFLOW SAVE (Only for the first frame) ---
                 if i == 0 and save_workflow:
@@ -308,7 +365,6 @@ class LinearEXRExport:
 
         except Exception as e:
             logger.error(f"Linear EXR export failed: {str(e)}")
-            import traceback
             logger.error(f"Linear EXR export traceback: {traceback.format_exc()}")
             return (f"ERROR: {str(e)}",)
 
@@ -316,15 +372,33 @@ class LinearEXRExport:
         """
         Verifies that the saved file exists, preserves HDR data (values > 1.0),
         and reports image dimensions and file size.
-        ... (method body unchanged) ...
+        This function now prioritizes pyexr for reading/verification.
         """
         try:
             if not os.path.exists(filepath):
                 logger.warning(f"Could not verify save: File not found at {filepath}")
                 return
 
-            # Load back the saved file preserving all color and depth information
-            verification_img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+            verification_img = None
+
+            # --- Attempt 1: Verify using pyexr (Most Robust) ---
+            if PYEXR_AVAILABLE:
+                try:
+                    verification_img = pyexr.read(filepath)
+                    logger.info("Verification succeeded using pyexr.")
+                except Exception as e:
+                    logger.warning(f"pyexr verification failed ({e}). Falling back to cv2.")
+
+            # --- Attempt 2: Fallback to OpenCV (cv2) ---
+            if verification_img is None:
+                try:
+                    # Load back the saved file preserving all color and depth information
+                    verification_img = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+                    logger.info("Verification succeeded using cv2.")
+                except Exception as e:
+                    # This catches the OpenEXR codec disabled error
+                    logger.warning(f"cv2 verification failed ({e}). Skipping data check.")
+
 
             if verification_img is not None:
                 # Calculate min/max values
@@ -349,7 +423,7 @@ class LinearEXRExport:
                 logger.info(f"HDR file size: {stats['size_mb']:.2f} MB")
 
             else:
-                logger.warning("Could not verify saved HDR file: Failed to read file with cv2.IMREAD_UNCHANGED.")
+                logger.warning("Could not verify saved HDR file: Failed to read file with any available method.")
 
         except Exception as verify_e:
             logger.warning(f"Error during HDR file verification: {verify_e}")
@@ -357,7 +431,7 @@ class LinearEXRExport:
     def _get_comfyui_output_directory(self) -> str:
         """
         Determine the ComfyUI output directory using multiple fallback methods
-        ... (method body unchanged) ...
+        Returns the path to the ComfyUI output directory
         """
         try:
             import folder_paths
@@ -383,7 +457,7 @@ class LinearEXRExport:
                 output_dir = os.path.join(comfyui_root, "output")
                 logger.info(f"Found ComfyUI root, using output directory: {output_dir}")
                 return output_dir
-            #else:
+
             # Final fallback - assume we're in custom_nodes and go up 2 levels
             output_dir = os.path.join(os.path.dirname(os.path.dirname(current_dir)), "output")
             logger.info(f"Using fallback output directory: {output_dir}")
@@ -398,22 +472,26 @@ class LinearEXRExport:
             return output_dir
 
     def _get_file_stats(self, filepath: str) -> dict:
-        """Get statistics about the saved file
-        ... (method body unchanged) ...
-        """
+        """Get statistics about the saved file"""
         try:
             # File size
             size_bytes = os.path.getsize(filepath)
             size_mb = size_bytes / (1024 * 1024)
             
-            # Image dimensions using OpenCV
-            img = cv2.imread(filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
-            if img is not None:
-                height, width = img.shape[:2]
-                channels = img.shape[2] if len(img.shape) > 2 else 1
-            else:
-                width = height = channels = 0
+            # Since cv2 can't read the EXR, we rely on pyexr's successful read for dimensions if available
+            width = height = channels = 0
             
+            if PYEXR_AVAILABLE:
+                try:
+                    # Attempt to get dimensions using pyexr just for logging if cv2 failed
+                    exr_file = pyexr.open(filepath)
+                    width = exr_file.width
+                    height = exr_file.height
+                    # This is a simplification; channel count is complex in EXR but 3 is typical
+                    channels = 3
+                except Exception:
+                    pass # Keep dimensions at 0 if pyexr failed to open the file object
+
             return {
                 'size_mb': size_mb,
                 'width': width,
