@@ -12,7 +12,9 @@ import torch
 import numpy as np
 from typing import Dict, Any, Tuple
 import logging
-
+from kornia.core import ImageModule as Module
+from kornia.core import Tensor
+from kornia.color import rgb_to_ycbcr
 
 class HDRVAEDecode:
     """
@@ -1026,7 +1028,7 @@ class HDRVAEDecode:
     def intelligent_hdr_decode(self, vae, latent, analysis_result, hdr_mode="moderate"):
         """
         Intelligent HDR decode with multiple modes for different use cases.
-        
+
         Modes:
         - conservative: 1.0x max, gentle expansion
         - moderate: 4.0x max with smart expansion
@@ -1077,16 +1079,19 @@ class HDRVAEDecode:
         else:
             pre_conv_out = pre_conv_out_raw
             self.logger.warning(f"⚠️ Unexpected pre_conv_out format: {pre_conv_out_raw.shape}")
-        
+
+        # Pre-calculated statistics:
         base_min = float(torch.min(standard_result))
         base_max = float(torch.max(standard_result))
-        pre_min = float(torch.min(pre_conv_out))  
+        pre_min = float(torch.min(pre_conv_out))
         pre_max = float(torch.max(pre_conv_out))
-        
+
         self.logger.info(f"📊 BASE (standard): range=[{base_min:.3f}, {base_max:.3f}]")
         self.logger.info(f"📊 PRE-CONV_OUT: range=[{pre_min:.3f}, {pre_max:.3f}]")
+
         # default result as a fallback
         final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=1.0)
+
         if hdr_mode == "conservative":
             # Conservative: 1.5x max with gentle expansion
             final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=2.0)
@@ -1103,72 +1108,275 @@ class HDRVAEDecode:
             # Exposure-based natural HDR
             final_result = self.exposure_based_hdr(standard_result, pre_conv_out, max_stops=2.5)
 
-        elif hdr_mode == "adaptive":
-            # Adaptive: Starts with full inverse sigmoid recovery (original approach)
-            self.logger.info("📸 ADAPTIVE mode: Natural exposure-based HDR based from the full mathematical recovery")
-            if abs(analysis_result['post_stats']['max'] - 1.0) < 1e-3:
-                # Apply inverse sigmoid
+        elif hdr_mode in ["adaptive", "aggressive", "Antonio_HDR"]:
+            # Define a small tolerance for floating point comparison/HDR detection
+            TOL = 1e-3
+
+            # Check if the internal, pre-activated data contained recoverable HDR information
+            has_hdr_data = pre_max > (1.0 + TOL)
+
+            # Only execute the aggressive mathematical recovery if HDR data was detected
+            if has_hdr_data:
+                self.logger.info(
+                    "✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
+
+                # Apply inverse sigmoid (needed for aggressive/adaptive modes)
                 recovered = self.inverse_sigmoid(standard_result)
 
-                # Scale back to approximate original range
-                pre_stats = analysis_result['pre_stats']
-                original_range = pre_stats['max'] - pre_stats['min']
-                original_offset = pre_stats['min']
-
-                recovered_normalized = (recovered - torch.min(recovered)) / (
-                        torch.max(recovered) - torch.min(recovered))
-                map_recovered = recovered_normalized * original_range + original_offset
-                exposure_map_recovered = torch.log2(torch.clamp(map_recovered, min=0.001))
-                exposure_hdr = torch.log2(torch.clamp(standard_result, min=0.001))
-                exposure_hdr = torch.pow(2.0, exposure_hdr)
-
-                # Apply exposure compensation to standard output
-                final_result = exposure_hdr * exposure_map_recovered
-        elif hdr_mode == "aggressive":
-            # Aggressive: Full inverse sigmoid recovery (original approach)
-            self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
-
-            if abs(analysis_result['post_stats']['max'] - 1.0) < 1e-3:
-                # Apply inverse sigmoid
-                recovered = self.inverse_sigmoid(standard_result)
-
-                # Scale back to approximate original range
+                # Scale back to approximate original range (common pre-calculation)
                 pre_stats = analysis_result['pre_stats']
                 original_range = pre_stats['max'] - pre_stats['min']
                 original_offset = pre_stats['min']
 
                 recovered_normalized = (recovered - torch.min(recovered)) / (torch.max(recovered) - torch.min(recovered))
-                final_result = recovered_normalized * original_range + original_offset
-                exposure_map = torch.log2(torch.clamp(final_result, min=0.001))
-                final_result = standard_result * torch.pow(2.0, exposure_map)
-        elif hdr_mode == "Antonio_HDR":
-            self.logger.info("🔴 Antonio_HDR mode")
-            if abs(analysis_result['post_stats']['max'] - 1.0) < 1e-3:
-                # Apply inverse sigmoid
-                recovered = self.inverse_sigmoid(standard_result)
 
-                # Scale back to approximate original range
-                pre_stats = analysis_result['pre_stats']
-                original_range = pre_stats['max'] - pre_stats['min']
-                original_offset = pre_stats['min']
-
-                recovered_normalized = (recovered - torch.min(recovered)) / (
-                        torch.max(recovered) - torch.min(recovered))
                 map_recovered = recovered_normalized * original_range + original_offset
-                map_recovered = torch.log2(torch.clamp(map_recovered, min=0.001))
-                aggressive = torch.pow(2.0, map_recovered)
-                exposure_hdr = torch.log2(torch.clamp(standard_result, min=0.001))
-                exposure_hdr = torch.pow(2.0, exposure_hdr)
+                exposure_map_aggressive = torch.log2(torch.clamp(map_recovered, min=0.001))
 
-                # Apply exposure compensation to standard output
-                adaptive = standard_result * exposure_hdr * aggressive
-                aggressive = standard_result * aggressive
-                # Fine tune to better fit values from multiple exposures bracketing are converted to HDR
-                final_result = ((1.0 - standard_result) * aggressive * 0.5) + (
-                            0.396 * standard_result * adaptive * aggressive)
+                # Pre-calculate common components for Adaptive/Antonio modes
+                aggressive_multiplier = torch.pow(2.0, exposure_map_aggressive)
+                exposure_hdr_base = torch.log2(torch.clamp(standard_result, min=0.001))
+                exposure_hdr_multiplier = torch.pow(2.0, exposure_hdr_base)
+                # --- END OF HDR DATA PRE-CALCULATION ---
+
+                if hdr_mode == "adaptive":
+                    # Adaptive: Natural exposure-based HDR
+                    self.logger.info("📸 ADAPTIVE mode: Natural exposure-based HDR based from the full mathematical recovery")
+                    final_result = exposure_hdr_multiplier * aggressive_multiplier
+
+                elif hdr_mode == "aggressive":
+                    # Aggressive: Full mathematical recovery
+                    self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
+                    final_result = standard_result * aggressive_multiplier
+
+                elif hdr_mode == "Antonio_HDR":
+                    # The adaptive blend uses the LDR, the LDR-based multiplier, and the HDR multiplier.
+                    adaptive_blended = standard_result * exposure_hdr_multiplier * aggressive_multiplier
+
+                    # The aggressive blend is LDR scaled by the pure HDR multiplier.
+                    aggressive_blended = standard_result * aggressive_multiplier
+
+                    # Convert standard_result (B, H, W, C) to YCbCr (B, C, H, W)
+                    std_c_first = standard_result.permute(0, 3, 1, 2)
+                    ycbcr_std = rgb_to_ycbcr(std_c_first)
+
+                    # Extract Y channel (B, H, W) and expand to (B, H, W, 1) for broadcasting against 3-channel tensors
+                    Y_std = ycbcr_std[:, 0, :, :]
+                    Y_std_expanded = Y_std.unsqueeze(-1)
+
+                    # --- Apply Blending Formula ---
+                    # Fine tune to better fit values from multiple exposures bracketing are converted to HDR
+                    max_result = (((1.0 - Y_std_expanded) * aggressive_blended * 0.5) +
+                                  (0.396 * Y_std_expanded * adaptive_blended * aggressive_blended))
+
+                    # Calculate the aggressive difference map
+                    aggressive_diff = aggressive_blended - standard_result
+
+                    blended_final = torch.maximum(aggressive_diff, max_result)
+
+                    # --- FINAL HSV RECOMBINATION (V from blended_final, HS from blended_final) ---
+
+                    # 1. Convert the blended final RGB result to HSV to extract its Value (V) and Hue/Saturation (HS)
+                    hsv_blended = self.rgb_to_hsv(blended_final)
+
+                    # Extract all three channels (Use C-Last indexing: dim=-1)
+                    H_std = hsv_blended[..., 0:1]  # Hue (B, H, W, 1)
+                    S_std = hsv_blended[..., 1:2]  # Saturation (B, H, W, 1)
+                    V_std = hsv_blended[..., 2:3] # Value (B, H, W, 1)
+
+                    # The order for stacking must be H, S, V (Channels 0, 1, 2)
+                    V_std_reduced = (1.0 - Y_std_expanded) * (V_std * 0.78) + (Y_std_expanded * V_std * 1.085)
+                    hsv_final = torch.cat([H_std, S_std, V_std_reduced], dim=-1)
+
+                    # 4. Convert back to RGB (result is B, C, H, W)
+                    final_result = self.hsv_to_rgb(hsv_final)
+            else:
+                self.logger.warning(
+                    f"⚠️ Mode {hdr_mode.upper()} requested, but no internal HDR data detected. Using fallback.")
 
         return final_result
 
+    def rgb_to_hsv(self, rgb_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Converts an RGB tensor to HSV.
+        Input tensor: [..., 3] where the last dimension is (R, G, B) and values are in [0, 1].
+        Output tensor: [..., 3] where the last dimension is (H, S, V) and values are in [0, 1].
+        """
+        # Ensure input is float and detach (if needed for a clean conversion)
+        rgb_tensor = rgb_tensor.float()
+
+        # Split channels
+        R, G, B = rgb_tensor.unbind(dim=-1)
+
+        # Calculate V (Value)
+        V, _ = torch.max(rgb_tensor, dim=-1)
+
+        # Calculate C (Chroma)
+        min_rgb, _ = torch.min(rgb_tensor, dim=-1)
+        C = V - min_rgb  # Delta
+
+        # Initialize H and S tensors
+        S = torch.zeros_like(V)
+        H = torch.zeros_like(V)
+
+        # Avoid division by zero by creating a mask for non-zero Chroma
+        nonzero_chroma_mask = C != 0
+
+        # Saturation (S) calculation
+        # S = C / V, but only for areas where V (Max) is not zero
+        # Add a small epsilon for stability
+        eps = 1e-8
+        V_safe = V + eps
+
+        # S: Set to 0 if C is 0 (grayscale), otherwise C/V.
+        # C == 0 implies min_rgb == V, so S must be 0 anyway.
+        S[nonzero_chroma_mask] = C[nonzero_chroma_mask] / V_safe[nonzero_chroma_mask]
+
+        # Hue (H) calculation - done only for saturated pixels (C != 0)
+
+        # Hue components (H' = H_sector + H_offset)
+        # R is max (H in [0, 60] or [300, 360])
+        mask_R = (V == R) & nonzero_chroma_mask
+        H[mask_R] = (G[mask_R] - B[mask_R]) / C[mask_R]
+
+        # G is max (H in [60, 180])
+        mask_G = (V == G) & nonzero_chroma_mask
+        H[mask_G] = (B[mask_G] - R[mask_G]) / C[mask_G] + 2.0
+
+        # B is max (H in [180, 300])
+        mask_B = (V == B) & nonzero_chroma_mask
+        H[mask_B] = (R[mask_B] - G[mask_B]) / C[mask_B] + 4.0
+
+        # Convert H from [0, 6) to [0, 1) and handle the wrap-around
+        H = (H / 6.0) % 1.0
+        # Ensure Hue is not negative (e.g., if a 0.0 value became -1e-8)
+        H[H < 0] += 1.0
+
+        # Combine H, S, V into the final tensor
+        # Unsqueeze H, S, V to shape [..., 1] before stacking
+        H = H.unsqueeze(-1)
+        S = S.unsqueeze(-1)
+        V = V.unsqueeze(-1)
+
+        hsv_tensor = torch.cat([H, S, V], dim=-1)
+        return hsv_tensor
+
+    def hsv_to_rgb(self, hsv_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Converts an HSV tensor to RGB.
+        Input tensor: [..., 3] where the last dimension is (H, S, V) and values are in [0, 1].
+        Output tensor: [..., 3] where the last dimension is (R, G, B) and values are in [0, 1].
+        """
+        # Ensure input is float
+        hsv_tensor = hsv_tensor.float()
+
+        # Split channels (H, S, V)
+        H, S, V = hsv_tensor.unbind(dim=-1)
+
+        # Chroma: C = V * S
+        C = V * S
+
+        # H' = H * 6 (H is normalized to [0, 1], we scale it to [0, 6])
+        H_prime = H * 6.0
+
+        # X is the second-largest component for the sector
+        # X = C * (1 - |(H' mod 2) - 1|)
+        X = C * (1.0 - torch.abs(torch.fmod(H_prime, 2.0) - 1.0))
+
+        # M = V - C (M is the addition factor to find R, G, B)
+        M = V - C
+
+        # Initialize R1, G1, B1 components (RGB without the M offset)
+        R1 = torch.zeros_like(V)
+        G1 = torch.zeros_like(V)
+        B1 = torch.zeros_like(V)
+
+        # Define 6 sectors for H' (0 to 6)
+        # Note: torch.floor handles the integer part of H'
+
+        # Sector 0: 0 <= H' < 1 (Red is largest)
+        mask_0 = (H_prime >= 0.0) & (H_prime < 1.0)
+        R1[mask_0] = C[mask_0]
+        G1[mask_0] = X[mask_0]
+        B1[mask_0] = 0.0
+
+        # Sector 1: 1 <= H' < 2 (Yellow/Green is largest)
+        mask_1 = (H_prime >= 1.0) & (H_prime < 2.0)
+        R1[mask_1] = X[mask_1]
+        G1[mask_1] = C[mask_1]
+        B1[mask_1] = 0.0
+
+        # Sector 2: 2 <= H' < 3 (Green is largest)
+        mask_2 = (H_prime >= 2.0) & (H_prime < 3.0)
+        R1[mask_2] = 0.0
+        G1[mask_2] = C[mask_2]
+        B1[mask_2] = X[mask_2]
+
+        # Sector 3: 3 <= H' < 4 (Cyan/Blue is largest)
+        mask_3 = (H_prime >= 3.0) & (H_prime < 4.0)
+        R1[mask_3] = 0.0
+        G1[mask_3] = X[mask_3]
+        B1[mask_3] = C[mask_3]
+
+        # Sector 4: 4 <= H' < 5 (Blue is largest)
+        mask_4 = (H_prime >= 4.0) & (H_prime < 5.0)
+        R1[mask_4] = X[mask_4]
+        G1[mask_4] = 0.0
+        B1[mask_4] = C[mask_4]
+
+        # Sector 5: 5 <= H' < 6 (Magenta/Red is largest)
+        mask_5 = (H_prime >= 5.0) & (H_prime < 6.0)
+        R1[mask_5] = C[mask_5]
+        G1[mask_5] = 0.0
+        B1[mask_5] = X[mask_5]
+
+        # If Saturation is 0, H is undefined and RGB = V.
+        # This case is inherently handled since C=0 implies X=0, so R1, G1, B1 are 0,
+        # and final RGB = M = V.
+
+        # Final R, G, B = (R1, G1, B1) + M
+        R_final = R1 + M
+        G_final = G1 + M
+        B_final = B1 + M
+
+        # Stack R, G, B into the final tensor
+        R_final = R_final.unsqueeze(-1)
+        G_final = G_final.unsqueeze(-1)
+        B_final = B_final.unsqueeze(-1)
+
+        rgb_tensor = torch.cat([R_final, G_final, B_final], dim=-1)
+        return rgb_tensor
+
+    # implemented my own version of the kornia.color method that avoids returning a clamped result
+    def ycbcr_to_rgb(self, image: Tensor) -> Tensor:
+        r"""Convert an YCbCr image to RGB.
+        The image data is assumed to be in the range of (0, 1).
+        Args:
+            image: YCbCr Image to be converted to RGB with shape :math:`(*, 3, H, W)`.
+        Returns:
+            RGB version of the image with shape :math:`(*, 3, H, W)`.
+        Examples:
+            >>> input = torch.rand(2, 3, 4, 5)
+            >>> output = ycbcr_to_rgb(input)  # 2x3x4x5
+        """
+        if not isinstance(image, Tensor):
+            raise TypeError(f"Input type is not a Tensor. Got {type(image)}")
+
+        if len(image.shape) < 3 or image.shape[-3] != 3:
+            raise ValueError(f"Input size must have a shape of (*, 3, H, W). Got {image.shape}")
+
+        y: Tensor = image[..., 0, :, :]
+        cb: Tensor = image[..., 1, :, :]
+        cr: Tensor = image[..., 2, :, :]
+
+        delta: float = 0.5
+        cb_shifted: Tensor = cb - delta
+        cr_shifted: Tensor = cr - delta
+
+        r: Tensor = y + 1.403 * cr_shifted
+        g: Tensor = y - 0.714 * cr_shifted - 0.344 * cb_shifted
+        b: Tensor = y + 1.773 * cb_shifted
+        return torch.stack([r, g, b], -3)
 
     def simple_bypass_decode(self, vae, latent):
         """Simpler bypass that skips attention to avoid hangs."""
