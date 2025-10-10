@@ -1121,7 +1121,7 @@ class HDRVAEDecode:
                     "✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
 
                 # Apply inverse sigmoid (needed for aggressive/adaptive modes)
-                recovered = self.inverse_sigmoid(standard_result)
+                recovered = self.inverse_tanh(standard_result)
 
                 # Scale back to approximate original range (common pre-calculation)
                 pre_stats = analysis_result['pre_stats']
@@ -1142,51 +1142,36 @@ class HDRVAEDecode:
                 if hdr_mode == "adaptive":
                     # Adaptive: Natural exposure-based HDR
                     self.logger.info("📸 ADAPTIVE mode: Natural exposure-based HDR based from the full mathematical recovery")
-                    final_result = exposure_hdr_multiplier * aggressive_multiplier
+                    blend = torch.sigmoid(aggressive_multiplier)
+                    final_result = ((1.0 - blend) * exposure_hdr_multiplier) + (blend * (aggressive_multiplier + exposure_hdr_multiplier))
 
                 elif hdr_mode == "aggressive":
                     # Aggressive: Full mathematical recovery
                     self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
-                    final_result = standard_result * aggressive_multiplier
+                    final_result = aggressive_multiplier + exposure_hdr_multiplier
 
                 elif hdr_mode == "Antonio_HDR":
-                    # The adaptive blend uses the LDR, the LDR-based multiplier, and the HDR multiplier.
-                    adaptive_blended = standard_result * exposure_hdr_multiplier * aggressive_multiplier
+                    #"""
+                    blend = torch.clamp(aggressive_multiplier, 0.0, 1.0)
+                    blend_v = blend[..., 2:3]
+                    hsv_std = self.rgb_to_hsv(exposure_hdr_multiplier)
+                    H_std = hsv_std[..., 0:1]  # Value (B, H, W, 1)
+                    S_std = hsv_std[..., 1:2]  # Value (B, H, W, 1)
+                    V_std = hsv_std[..., 2:3]  # Value (B, H, W, 1)
 
-                    # The aggressive blend is LDR scaled by the pure HDR multiplier.
-                    aggressive_blended = standard_result * aggressive_multiplier
+                    aggressive = aggressive_multiplier + exposure_hdr_multiplier
+                    hsv_agg = self.rgb_to_hsv(aggressive)
+                    H_agg = hsv_agg[..., 0:1]  # Value (B, H, W, 1)
+                    S_agg = hsv_agg[..., 1:2]  # Value (B, H, W, 1)
+                    V_agg = hsv_agg[..., 2:3]  # Value (B, H, W, 1)
 
-                    # Convert standard_result (B, H, W, C) to YCbCr (B, C, H, W)
-                    std_c_first = standard_result.permute(0, 3, 1, 2)
-                    ycbcr_std = rgb_to_ycbcr(std_c_first)
+                    H_blended = (1.0-H_std) * (H_std * 1.2) + (H_std * H_std)
+                    H_final = ((1.0-blend_v) * H_blended) + (blend_v * H_agg)
+                    S_blended = (1.0 - S_std) * (S_std * 1.10) + (S_std * S_std)
+                    S_final = ((1.0-blend_v) * S_blended) + (blend_v * S_agg)
+                    V_final = ((1.0-blend_v) * V_std *0.656) + (blend_v * V_agg)
 
-                    # Extract Y channel (B, H, W) and expand to (B, H, W, 1) for broadcasting against 3-channel tensors
-                    Y_std = ycbcr_std[:, 0, :, :]
-                    Y_std_expanded = Y_std.unsqueeze(-1)
-
-                    # --- Apply Blending Formula ---
-                    # Fine tune to better fit values from multiple exposures bracketing are converted to HDR
-                    max_result = (((1.0 - Y_std_expanded) * aggressive_blended * 0.5) +
-                                  (0.396 * Y_std_expanded * adaptive_blended * aggressive_blended))
-
-                    # Calculate the aggressive difference map
-                    aggressive_diff = aggressive_blended - standard_result
-
-                    blended_final = torch.maximum(aggressive_diff, max_result)
-
-                    # --- FINAL HSV RECOMBINATION (V from blended_final, HS from blended_final) ---
-
-                    # 1. Convert the blended final RGB result to HSV to extract its Value (V) and Hue/Saturation (HS)
-                    hsv_blended = self.rgb_to_hsv(blended_final)
-
-                    # Extract all three channels (Use C-Last indexing: dim=-1)
-                    H_std = hsv_blended[..., 0:1]  # Hue (B, H, W, 1)
-                    S_std = hsv_blended[..., 1:2]  # Saturation (B, H, W, 1)
-                    V_std = hsv_blended[..., 2:3] # Value (B, H, W, 1)
-
-                    # The order for stacking must be H, S, V (Channels 0, 1, 2)
-                    V_std_reduced = (1.0 - Y_std_expanded) * (V_std * 0.78) + (Y_std_expanded * V_std * 1.085)
-                    hsv_final = torch.cat([H_std, S_std, V_std_reduced], dim=-1)
+                    hsv_final = torch.cat([H_final, S_final, V_final], dim=-1)
 
                     # 4. Convert back to RGB (result is B, C, H, W)
                     final_result = self.hsv_to_rgb(hsv_final)
