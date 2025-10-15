@@ -54,10 +54,10 @@ class HDRVAEDecode:
             "optional": {
                 "hdr_mode": (["conservative", "exposure", "adaptive_recovery", "mathematical_recovery"],
                              {"default": "mathematical_recovery",
-                              "tooltip": "conservative: Gentle ev_multiplier expansion, safest for general use \n "
+                              "tooltip": "conservative: Gentle conservative_ev_multiplier expansion, safest for general use \n "
                                          "exposure: Natural exposure-based HDR for compositing workflows \n "
                                          "mathematical_recovery: Full mathematical recovery, maximum range"}),
-                "ev_multiplier": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1, "tooltip": "Expansion multiplier for the conservative mode."}),
+                "conservative_ev_multiplier": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1, "tooltip": "Expansion multiplier for the conservative mode."}),
                 "enable_negatives": ("BOOLEAN", {"default": False, "tooltip": "Will display any value that is below 0.0"}),
             }
         }
@@ -72,13 +72,13 @@ class HDRVAEDecode:
         samples: Dict[str, torch.Tensor],
         vae: Any,
         hdr_mode: str = "mathematical_recovery",
-        ev_multiplier: float = 1.0,
+        conservative_ev_multiplier: float = 1.0,
         enable_negatives: bool = False,
     ) -> Tuple[torch.Tensor]:
         """
         HDR VAE decode with intelligent conv_out analysis and multiple HDR modes.
         HDR Modes:
-        - conservative: Gentle ev_multiplier expansion, safest for general use
+        - conservative: Gentle conservative_ev_multiplier expansion, safest for general use
         - exposure: Natural exposure-based HDR for compositing workflows
         - mathematical_recovery: Full mathematical recovery, maximum range
         Features smart highlight expansion preserving base image perceptual quality.
@@ -185,9 +185,9 @@ class HDRVAEDecode:
             self.logger.info("✅ Using INTELLIGENT decode result (skipped bypass)")
         
         # Apply scale factor if specified
-        if ev_multiplier != 1.0:
-            decoded = decoded * ev_multiplier
-            self.logger.info(f"Applied ev multiplication of: {ev_multiplier}")
+        if conservative_ev_multiplier != 1.0:
+            decoded = decoded * conservative_ev_multiplier
+            self.logger.info(f"Applied ev multiplication of: {conservative_ev_multiplier}")
         
         # Clamp to wider range, allowing negatives if enabled
         if enable_negatives:
@@ -1026,12 +1026,12 @@ class HDRVAEDecode:
         
         return final_result
 
-    def intelligent_hdr_decode(self, vae, latent, analysis_result, hdr_mode="mathematical_recovery", ev_multiplier=1.0):
+    def intelligent_hdr_decode(self, vae, latent, analysis_result, hdr_mode="mathematical_recovery", conservative_ev_multiplier=1.0):
         """
         Intelligent HDR decode with multiple modes for different use cases.
 
         Modes:
-        - conservative: ev_multiplier, gentle expansion
+        - conservative: conservative_ev_multiplier, gentle expansion
         - exposure: Exposure-based natural HDR
         - mathematical recovery: Full mathematical recovery
         """
@@ -1124,8 +1124,8 @@ class HDRVAEDecode:
         # default result as a fallback
         final_result = ldr_linear_image
         if hdr_mode == "conservative":
-            final_result = self.smart_hdr_expansion(ldr_linear_image, pre_conv_out, expansion_factor=ev_multiplier)
-            self.logger.info(f"🟢 CONSERVATIVE mode: Gentle expansion of: {ev_multiplier}")
+            final_result = self.smart_hdr_expansion(ldr_linear_image, pre_conv_out, expansion_factor=conservative_ev_multiplier)
+            self.logger.info(f"🟢 CONSERVATIVE mode: Gentle expansion of: {conservative_ev_multiplier}")
 
         elif hdr_mode == "exposure":
             final_result = self.exposure_based_hdr(ldr_linear_image, map_recovered, pre_stats["max"])
