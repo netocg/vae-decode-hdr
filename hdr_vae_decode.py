@@ -52,7 +52,7 @@ class HDRVAEDecode:
                 "vae": ("VAE",),
             },
             "optional": {
-                "hdr_mode": (["conservative", "exposure", "mathematical_recovery"],
+                "hdr_mode": (["conservative", "exposure", "adaptive_recovery", "mathematical_recovery"],
                              {"default": "mathematical_recovery",
                               "tooltip": "conservative: Gentle ev_multiplier expansion, safest for general use \n "
                                          "exposure: Natural exposure-based HDR for compositing workflows \n "
@@ -960,37 +960,37 @@ class HDRVAEDecode:
         Smart HDR expansion that preserves base image quality while extending highlights.
         """
         self.logger.info(f"🎯 SMART HDR EXPANSION: Using expansion factor {expansion_factor:.1f}x")
-        
+
         # 🔧 CRITICAL: Ensure all tensors are on the same device
         target_device = standard_output.device
         self.logger.info(f"🔧 EXPANSION DEVICE SYNC: standard_output on {standard_output.device}, pre_conv_out on {pre_conv_out_values.device}")
-        
+
         # Move pre_conv_out_values to match standard_output device if needed
         if pre_conv_out_values.device != target_device:
             pre_conv_out_values = pre_conv_out_values.to(target_device)
             self.logger.info(f"✅ MOVED pre_conv_out_values: → {target_device}")
-        
+
         # Use standard output as base (perceptually correct)
         base = standard_output.clone()
-        
+
         # Find highlight regions (bright areas that got clamped)
         highlight_mask = pre_conv_out_values > 1.0
         highlight_count = int(torch.sum(highlight_mask))
-        
+
         self.logger.info(f"📍 HIGHLIGHT REGIONS: {highlight_count} pixels detected for expansion")
-        
+
         if highlight_count > 0:
             # Apply controlled expansion only to highlights
             # Formula: base + (pre_conv_out - 1.0) * expansion_factor * base
             expansion_amount = (pre_conv_out_values - 1.0) * expansion_factor * base
             expanded = torch.where(highlight_mask, base + expansion_amount, base)
-            
+
             expanded_min = float(torch.min(expanded))
             expanded_max = float(torch.max(expanded))
             hdr_pixels = int(torch.sum(expanded > 1.0))
-            
+
             self.logger.info(f"✨ SMART EXPANSION: range=[{expanded_min:.3f}, {expanded_max:.3f}], HDR pixels: {hdr_pixels}")
-            
+
             return expanded
         else:
             self.logger.info("⚠️ No highlights detected - returning standard output")
@@ -1058,6 +1058,7 @@ class HDRVAEDecode:
         self.logger.info(f"🔧 TENSOR SHAPES: standard_result={standard_result.shape}, pre_conv_out_raw={pre_conv_out_raw.shape}")
         
         # Convert pre_conv_out from 128ch to 3ch RGB using same logic as main formatter
+        pre_conv_out = pre_conv_out_raw
         if pre_conv_out_raw.dim() == 4 and pre_conv_out_raw.shape[1] == 128:
             # Apply the same HDR-preserving conversion
             r_channels = pre_conv_out_raw[:, 0:42, :, :]
@@ -1076,7 +1077,6 @@ class HDRVAEDecode:
             
             self.logger.info(f"✅ CONVERTED pre_conv_out: {pre_conv_out_raw.shape} -> {pre_conv_out.shape}")
         else:
-            pre_conv_out = pre_conv_out_raw
             self.logger.warning(f"⚠️ Unexpected pre_conv_out format: {pre_conv_out_raw.shape}")
 
         # Pre-calculated statistics:
@@ -1098,6 +1098,7 @@ class HDRVAEDecode:
         has_hdr_data = pre_max > (1.0 + TOL)
         # Only execute the aggressive mathematical recovery if HDR data was detected
         map_recovered = pre_conv_out
+        map_recovered_aligned = 1.0
         if has_hdr_data:
             self.logger.info("✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
             # 2. Apply adaptive inverse function to recover raw features
@@ -1116,6 +1117,9 @@ class HDRVAEDecode:
             original_range = pre_stats['max'] - pre_stats['min']
             recovered_normalized = (recovered - torch.min(recovered)) / (torch.max(recovered) - torch.min(recovered))
             map_recovered = recovered_normalized * original_range + pre_stats['min']
+            # --- CRUCIAL MIDTONE CORRECTION (Aligns mean to 1.0, establishing correct exposure) ---
+            # This shifts the VAE's output so its mean corresponds to a neutral multiplier of 1.0.
+            map_recovered_aligned = map_recovered - pre_stats['mean'] + 1.0
 
         # default result as a fallback
         final_result = ldr_linear_image
@@ -1127,20 +1131,52 @@ class HDRVAEDecode:
             final_result = self.exposure_based_hdr(ldr_linear_image, map_recovered, pre_stats["max"])
             self.logger.info("📸 EXPOSURE mode: Natural exposure-based HDR")
 
+        elif hdr_mode == "adaptive_recovery":
+            # Calculate the new max value after alignment for reference
+            aligned_max_ev = torch.max(map_recovered_aligned)
+
+            # Calculate compression factor for values > 1.0
+            compression_factor = 1.0  # No compression needed
+            if aligned_max_ev > 1.0 and aligned_max_ev > pre_stats['max']:
+                # How much EV range we have above 1.0:
+                excess_ev_range = aligned_max_ev - 1.0
+                # How much EV range we want to compress it into:
+                target_ev_range = pre_stats['max'] - 1.0
+
+                # Compression ratio to apply to EV values > 1.0
+                compression_factor = target_ev_range / excess_ev_range
+                self.logger.info(
+                    f"✨ Highlight Compression Factor: {compression_factor:.3f} (Max EV reduced to {pre_stats['max']:.3f})")
+            else:
+                self.logger.info(f"✨ No highlight compression needed. Max EV: {aligned_max_ev:.3f}")
+
+            # Find the EV values greater than the midtone (1.0)
+            highlight_mask = (map_recovered_aligned > 1.0).float()
+
+            # Calculate the compressed highlight values
+            highlight_values = map_recovered_aligned - 1.0  # Values start at 0
+            compressed_highlights = highlight_values * compression_factor + 1.0
+
+            # 2. Combine: Use the original map where mask is 0 (midtone/shadows),
+            # and the compressed map where mask is 1 (highlights)
+            map_compressed = (map_recovered_aligned * (1.0 - highlight_mask)) + (compressed_highlights * highlight_mask)
+
+            # 3. Convert the compressed map to the final multiplier map
+            compressed_exposure_map = torch.log2(torch.clamp(map_compressed, min=0.001))
+            compressed_multiplier = torch.pow(2.0, compressed_exposure_map)
+            final_result = ldr_linear_image * compressed_multiplier
+
         elif hdr_mode == "mathematical_recovery":
-            # --- CRUCIAL MIDTONE CORRECTION (Ensures L_ratio mean is 1.0) ---
-            # This shifts the VAE's output so its mean corresponds to a neutral multiplier of 1.0.
-            map_recovered = map_recovered - pre_stats['mean'] + 1.0
             # 4. Convert corrected map to Exposure Value (EV) in stops
-            ev_target = torch.log2(torch.clamp(map_recovered, min=0.001))
+            ev_target = torch.log2(torch.clamp(map_recovered_aligned, min=0.001))
             # Pre-calculate common components for all modes:
-            # aggressive_multiplier is the VAE's L_ratio (full dynamic range extension)
+            # ev_target is the VAE's L_ratio (full dynamic range extension)
             L_ratio = torch.pow(2.0, ev_target)
             # --- END OF HDR DATA PRE-CALCULATION ---
 
             # Aggressive: Full mathematical recovery
             final_result = ldr_linear_image * L_ratio
-            self.logger.info("🔴 mathematical_recovery mode")
+            self.logger.info("🔴 Full mathematical_recovery mode")
 
         return final_result
 
