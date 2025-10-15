@@ -14,7 +14,6 @@ from typing import Dict, Any, Tuple
 import logging
 from kornia.core import ImageModule as Module
 from kornia.core import Tensor
-from kornia.color import rgb_to_ycbcr
 
 class HDRVAEDecode:
     """
@@ -38,6 +37,7 @@ class HDRVAEDecode:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
+            self.NORMALIZATION_FUNCTION = str()
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -47,9 +47,8 @@ class HDRVAEDecode:
                 "vae": ("VAE",),
             },
             "optional": {
-                "hdr_mode": (["conservative", "moderate", "exposure",  "adaptive", "aggressive", "Antonio_HDR"],
-                             {"default": "Antonio_HDR"}),
-                "max_range": ("FLOAT", {"default": 488.0, "min": 1.0, "max": 65504.0, "step": 1.0}),
+                "hdr_mode": (["conservative", "moderate", "exposure", "aggressive"], {"default": "aggressive"}),
+                "max_range": ("FLOAT", {"default": 50.0, "min": 1.0, "max": 1000.0, "step": 1.0}),
                 "scale_factor": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
                 "enable_negatives": ("BOOLEAN", {"default": False}),
             }
@@ -65,7 +64,7 @@ class HDRVAEDecode:
         samples: Dict[str, torch.Tensor],
         vae: Any,
         hdr_mode: str = "moderate",
-        max_range: float = 2.0,
+        max_range: float = 50.0,
         scale_factor: float = 1.0,
         enable_negatives: bool = False,
     ) -> Tuple[torch.Tensor]:
@@ -904,8 +903,10 @@ class HDRVAEDecode:
                 # Analyze the transformation pattern
                 if abs(post_max - 1.0) < 1e-3 and abs(post_min - 0.0) < 1e-3:
                     self.logger.info("🎯 DETECTED: conv_out appears to apply SIGMOID-like normalization to [0,1]")
+                    self.NORMALIZATION_FUNCTION = "SIGMOID"
                 elif abs(post_max - 1.0) < 1e-3 and abs(post_min + 1.0) < 1e-3:
                     self.logger.info("🎯 DETECTED: conv_out appears to apply TANH-like normalization to [-1,1]")
+                    self.NORMALIZATION_FUNCTION = "TANH"
                 else:
                     self.logger.info("🤔 DETECTED: Custom transformation pattern")
                 
@@ -1041,7 +1042,7 @@ class HDRVAEDecode:
         
         # Get standard decode result (perceptually correct base)
         standard_result = vae.decode(latent)
-        
+
         # Get pre-conv_out values for analysis
         pre_conv_out_raw = analysis_result['pre_conv_out']
         
@@ -1108,276 +1109,110 @@ class HDRVAEDecode:
             # Exposure-based natural HDR
             final_result = self.exposure_based_hdr(standard_result, pre_conv_out, max_stops=2.5)
 
-        elif hdr_mode in ["adaptive", "aggressive", "Antonio_HDR"]:
+        elif hdr_mode == "aggressive":
+            self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
             # Define a small tolerance for floating point comparison/HDR detection
             TOL = 1e-3
-
             # Check if the internal, pre-activated data contained recoverable HDR information
             has_hdr_data = pre_max > (1.0 + TOL)
-
             # Only execute the aggressive mathematical recovery if HDR data was detected
             if has_hdr_data:
-                self.logger.info(
-                    "✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
+                self.logger.info("✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
 
-                # Apply inverse sigmoid (needed for aggressive/adaptive modes)
-                recovered = self.inverse_tanh(standard_result)
+                # 1. Convert standard_result (sRGB) to linear light [0, 1] for RGB operations
+                ldr_linear_image = self.srgb_to_linear(standard_result)
+                # 2. Apply adaptive inverse function to recover raw features
+                if self.NORMALIZATION_FUNCTION == "TANH":
+                    recovered = self.inverse_tanh(standard_result)
+                elif self.NORMALIZATION_FUNCTION == "SIGMOID":
+                    # Original VAEs use this, which requires inverse_sigmoid
+                    recovered = self.inverse_sigmoid(standard_result)
+                else:
+                    # Fallback: assume standard_result is already the raw feature map
+                    self.logger.warning("Unknown NORMALIZATION_FUNCTION. Assuming standard_result is raw feature data.")
+                    recovered = standard_result
 
-                # Scale back to approximate original range (common pre-calculation)
+                # 3. Scale back to approximate original range
                 pre_stats = analysis_result['pre_stats']
                 original_range = pre_stats['max'] - pre_stats['min']
-                original_offset = pre_stats['min']
-
                 recovered_normalized = (recovered - torch.min(recovered)) / (torch.max(recovered) - torch.min(recovered))
-
-                map_recovered = recovered_normalized * original_range + original_offset
+                map_recovered = recovered_normalized * original_range + pre_stats['min']
+                # --- CRUCIAL MIDTONE CORRECTION (Ensures L_ratio mean is 1.0) ---
+                # This shifts the VAE's output so its mean corresponds to a neutral multiplier of 1.0.
+                map_recovered = map_recovered - pre_stats['mean'] + 1.0
+                # 4. Convert corrected map to Exposure Value (EV) in stops
                 exposure_map_aggressive = torch.log2(torch.clamp(map_recovered, min=0.001))
-
-                # Pre-calculate common components for Adaptive/Antonio modes
+                # Pre-calculate common components for all modes:
+                # aggressive_multiplier is the VAE's L_ratio (full dynamic range extension)
                 aggressive_multiplier = torch.pow(2.0, exposure_map_aggressive)
-                exposure_hdr_base = torch.log2(torch.clamp(standard_result, min=0.001))
-                exposure_hdr_multiplier = torch.pow(2.0, exposure_hdr_base)
                 # --- END OF HDR DATA PRE-CALCULATION ---
 
-                if hdr_mode == "adaptive":
-                    # Adaptive: Natural exposure-based HDR
-                    self.logger.info("📸 ADAPTIVE mode: Natural exposure-based HDR based from the full mathematical recovery")
-                    blend = torch.sigmoid(aggressive_multiplier)
-                    final_result = ((1.0 - blend) * exposure_hdr_multiplier) + (blend * (aggressive_multiplier + exposure_hdr_multiplier))
-
-                elif hdr_mode == "aggressive":
-                    # Aggressive: Full mathematical recovery
-                    self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
-                    final_result = aggressive_multiplier + exposure_hdr_multiplier
-
-                elif hdr_mode == "Antonio_HDR":
-                    #"""
-                    blend = torch.clamp(aggressive_multiplier, 0.0, 1.0)
-                    blend_v = blend[..., 2:3]
-                    hsv_std = self.rgb_to_hsv(exposure_hdr_multiplier)
-                    H_std = hsv_std[..., 0:1]  # Value (B, H, W, 1)
-                    S_std = hsv_std[..., 1:2]  # Value (B, H, W, 1)
-                    V_std = hsv_std[..., 2:3]  # Value (B, H, W, 1)
-
-                    aggressive = aggressive_multiplier + exposure_hdr_multiplier
-                    hsv_agg = self.rgb_to_hsv(aggressive)
-                    H_agg = hsv_agg[..., 0:1]  # Value (B, H, W, 1)
-                    S_agg = hsv_agg[..., 1:2]  # Value (B, H, W, 1)
-                    V_agg = hsv_agg[..., 2:3]  # Value (B, H, W, 1)
-
-                    H_blended = (1.0-H_std) * (H_std * 1.2) + (H_std * H_std)
-                    H_final = ((1.0-blend_v) * H_blended) + (blend_v * H_agg)
-                    S_blended = (1.0 - S_std) * (S_std * 1.10) + (S_std * S_std)
-                    S_final = ((1.0-blend_v) * S_blended) + (blend_v * S_agg)
-                    V_final = ((1.0-blend_v) * V_std *0.656) + (blend_v * V_agg)
-
-                    hsv_final = torch.cat([H_final, S_final, V_final], dim=-1)
-
-                    # 4. Convert back to RGB (result is B, C, H, W)
-                    final_result = self.hsv_to_rgb(hsv_final)
+                # Aggressive: Full mathematical recovery
+                final_result = ldr_linear_image * aggressive_multiplier
             else:
                 self.logger.warning(
                     f"⚠️ Mode {hdr_mode.upper()} requested, but no internal HDR data detected. Using fallback.")
+                final_result = ldr_linear_image
 
         return final_result
 
-    def rgb_to_hsv(self, rgb_tensor: torch.Tensor) -> torch.Tensor:
+    def srgb_to_linear(self, srgb_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Converts an RGB tensor to HSV.
-        Input tensor: [..., 3] where the last dimension is (R, G, B) and values are in [0, 1].
-        Output tensor: [..., 3] where the last dimension is (H, S, V) and values are in [0, 1].
-        """
-        # Ensure input is float and detach (if needed for a clean conversion)
-        rgb_tensor = rgb_tensor.float()
+        Converts an sRGB tensor (typically from a VAE output, range [0, 1] or [-1, 1])
+        to a linear light RGB tensor by applying the inverse sRGB gamma curve.
 
-        # Split channels
-        R, G, B = rgb_tensor.unbind(dim=-1)
+        The sRGB standard assumes values are in the range [0, 1]. If your VAE output
+        is in [-1, 1], we first remap it to [0, 1] (or just work with the positive channels).
 
-        # Calculate V (Value)
-        V, _ = torch.max(rgb_tensor, dim=-1)
-
-        # Calculate C (Chroma)
-        min_rgb, _ = torch.min(rgb_tensor, dim=-1)
-        C = V - min_rgb  # Delta
-
-        # Initialize H and S tensors
-        S = torch.zeros_like(V)
-        H = torch.zeros_like(V)
-
-        # Avoid division by zero by creating a mask for non-zero Chroma
-        nonzero_chroma_mask = C != 0
-
-        # Saturation (S) calculation
-        # S = C / V, but only for areas where V (Max) is not zero
-        # Add a small epsilon for stability
-        eps = 1e-8
-        V_safe = V + eps
-
-        # S: Set to 0 if C is 0 (grayscale), otherwise C/V.
-        # C == 0 implies min_rgb == V, so S must be 0 anyway.
-        S[nonzero_chroma_mask] = C[nonzero_chroma_mask] / V_safe[nonzero_chroma_mask]
-
-        # Hue (H) calculation - done only for saturated pixels (C != 0)
-
-        # Hue components (H' = H_sector + H_offset)
-        # R is max (H in [0, 60] or [300, 360])
-        mask_R = (V == R) & nonzero_chroma_mask
-        H[mask_R] = (G[mask_R] - B[mask_R]) / C[mask_R]
-
-        # G is max (H in [60, 180])
-        mask_G = (V == G) & nonzero_chroma_mask
-        H[mask_G] = (B[mask_G] - R[mask_G]) / C[mask_G] + 2.0
-
-        # B is max (H in [180, 300])
-        mask_B = (V == B) & nonzero_chroma_mask
-        H[mask_B] = (R[mask_B] - G[mask_B]) / C[mask_B] + 4.0
-
-        # Convert H from [0, 6) to [0, 1) and handle the wrap-around
-        H = (H / 6.0) % 1.0
-        # Ensure Hue is not negative (e.g., if a 0.0 value became -1e-8)
-        H[H < 0] += 1.0
-
-        # Combine H, S, V into the final tensor
-        # Unsqueeze H, S, V to shape [..., 1] before stacking
-        H = H.unsqueeze(-1)
-        S = S.unsqueeze(-1)
-        V = V.unsqueeze(-1)
-
-        hsv_tensor = torch.cat([H, S, V], dim=-1)
-        return hsv_tensor
-
-    def hsv_to_rgb(self, hsv_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Converts an HSV tensor to RGB.
-        Input tensor: [..., 3] where the last dimension is (H, S, V) and values are in [0, 1].
-        Output tensor: [..., 3] where the last dimension is (R, G, B) and values are in [0, 1].
-        """
-        # Ensure input is float
-        hsv_tensor = hsv_tensor.float()
-
-        # Split channels (H, S, V)
-        H, S, V = hsv_tensor.unbind(dim=-1)
-
-        # Chroma: C = V * S
-        C = V * S
-
-        # H' = H * 6 (H is normalized to [0, 1], we scale it to [0, 6])
-        H_prime = H * 6.0
-
-        # X is the second-largest component for the sector
-        # X = C * (1 - |(H' mod 2) - 1|)
-        X = C * (1.0 - torch.abs(torch.fmod(H_prime, 2.0) - 1.0))
-
-        # M = V - C (M is the addition factor to find R, G, B)
-        M = V - C
-
-        # Initialize R1, G1, B1 components (RGB without the M offset)
-        R1 = torch.zeros_like(V)
-        G1 = torch.zeros_like(V)
-        B1 = torch.zeros_like(V)
-
-        # Define 6 sectors for H' (0 to 6)
-        # Note: torch.floor handles the integer part of H'
-
-        # Sector 0: 0 <= H' < 1 (Red is largest)
-        mask_0 = (H_prime >= 0.0) & (H_prime < 1.0)
-        R1[mask_0] = C[mask_0]
-        G1[mask_0] = X[mask_0]
-        B1[mask_0] = 0.0
-
-        # Sector 1: 1 <= H' < 2 (Yellow/Green is largest)
-        mask_1 = (H_prime >= 1.0) & (H_prime < 2.0)
-        R1[mask_1] = X[mask_1]
-        G1[mask_1] = C[mask_1]
-        B1[mask_1] = 0.0
-
-        # Sector 2: 2 <= H' < 3 (Green is largest)
-        mask_2 = (H_prime >= 2.0) & (H_prime < 3.0)
-        R1[mask_2] = 0.0
-        G1[mask_2] = C[mask_2]
-        B1[mask_2] = X[mask_2]
-
-        # Sector 3: 3 <= H' < 4 (Cyan/Blue is largest)
-        mask_3 = (H_prime >= 3.0) & (H_prime < 4.0)
-        R1[mask_3] = 0.0
-        G1[mask_3] = X[mask_3]
-        B1[mask_3] = C[mask_3]
-
-        # Sector 4: 4 <= H' < 5 (Blue is largest)
-        mask_4 = (H_prime >= 4.0) & (H_prime < 5.0)
-        R1[mask_4] = X[mask_4]
-        G1[mask_4] = 0.0
-        B1[mask_4] = C[mask_4]
-
-        # Sector 5: 5 <= H' < 6 (Magenta/Red is largest)
-        mask_5 = (H_prime >= 5.0) & (H_prime < 6.0)
-        R1[mask_5] = C[mask_5]
-        G1[mask_5] = 0.0
-        B1[mask_5] = X[mask_5]
-
-        # If Saturation is 0, H is undefined and RGB = V.
-        # This case is inherently handled since C=0 implies X=0, so R1, G1, B1 are 0,
-        # and final RGB = M = V.
-
-        # Final R, G, B = (R1, G1, B1) + M
-        R_final = R1 + M
-        G_final = G1 + M
-        B_final = B1 + M
-
-        # Stack R, G, B into the final tensor
-        R_final = R_final.unsqueeze(-1)
-        G_final = G_final.unsqueeze(-1)
-        B_final = B_final.unsqueeze(-1)
-
-        rgb_tensor = torch.cat([R_final, G_final, B_final], dim=-1)
-        return rgb_tensor
-
-    # implemented my own version of the kornia.color method that avoids returning a clamped result
-    def ycbcr_to_rgb(self, image: Tensor) -> Tensor:
-        r"""Convert an YCbCr image to RGB.
-        The image data is assumed to be in the range of (0, 1).
         Args:
-            image: YCbCr Image to be converted to RGB with shape :math:`(*, 3, H, W)`.
+            srgb_tensor: The aggressive tensor, assumed to be in the sRGB color space.
+
         Returns:
-            RGB version of the image with shape :math:`(*, 3, H, W)`.
-        Examples:
-            >>> input = torch.rand(2, 3, 4, 5)
-            >>> output = ycbcr_to_rgb(input)  # 2x3x4x5
+            The tensor in the linear light color space.
         """
-        if not isinstance(image, Tensor):
-            raise TypeError(f"Input type is not a Tensor. Got {type(image)}")
+        # 1. Handle VAE's [-1, 1] range: For color calculations, we often shift
+        #    the [-1, 1] range to [0, 1] first, as sRGB is defined for positive values.
+        #    Since 'aggressive' often contains negative values in shadows, we perform
+        #    the sRGB conversion only on the positive components.
 
-        if len(image.shape) < 3 or image.shape[-3] != 3:
-            raise ValueError(f"Input size must have a shape of (*, 3, H, W). Got {image.shape}")
+        # We must operate only on absolute, positive values for the sRGB curve.
+        srgb_abs = torch.abs(srgb_tensor)
 
-        y: Tensor = image[..., 0, :, :]
-        cb: Tensor = image[..., 1, :, :]
-        cr: Tensor = image[..., 2, :, :]
+        # Standard sRGB linearization formula
+        # For values < 0.04045 (linear segment)
+        linear_part = srgb_abs / 12.92
 
-        delta: float = 0.5
-        cb_shifted: Tensor = cb - delta
-        cr_shifted: Tensor = cr - delta
+        # For values >= 0.04045 (gamma segment)
+        gamma_part = torch.pow((srgb_abs + 0.055) / 1.055, 2.4)
 
-        r: Tensor = y + 1.403 * cr_shifted
-        g: Tensor = y - 0.714 * cr_shifted - 0.344 * cb_shifted
-        b: Tensor = y + 1.773 * cb_shifted
-        return torch.stack([r, g, b], -3)
+        # Combine the two parts based on the threshold
+        linear_tensor_positive = torch.where(
+            srgb_abs <= 0.04045,
+            linear_part,
+            gamma_part
+        )
+
+        # Apply the original sign back (since we used torch.abs earlier)
+        # This maintains negative values for shadows/compression artifacts if they exist.
+        linear_tensor = torch.sign(srgb_tensor) * linear_tensor_positive
+
+        return linear_tensor
 
     def simple_bypass_decode(self, vae, latent):
         """Simpler bypass that skips attention to avoid hangs."""
-        
+
         self.logger.info("🚀 Attempting SIMPLE bypass (skipping attention)")
-        
+
         decoder = vae.first_stage_model.decoder
-        
+
         with torch.inference_mode():
             # Force CUDA device detection (same as smart bypass)
             if hasattr(decoder, 'conv_in'):
                 detected_device = next(decoder.conv_in.parameters()).device
                 detected_dtype = next(decoder.conv_in.parameters()).dtype
-                
+
                 self.logger.info(f"🔍 SIMPLE BYPASS detected: {detected_device}, {detected_dtype}")
-                
+
                 # Force CUDA if available
                 if detected_device.type == 'cpu' and torch.cuda.is_available():
                     self.logger.warning(f"⚠️ Simple bypass forcing CUDA over CPU")
@@ -1386,11 +1221,11 @@ class HDRVAEDecode:
                 else:
                     device = detected_device
                     dtype = detected_dtype
-                
+
                 original_device = latent.device
                 latent = latent.to(device=device, dtype=dtype)
                 self.logger.info(f"🔧 SIMPLE: {original_device} → {device}, {dtype}")
-                
+
                 # Ensure decoder is on the same device
                 conv_device = next(decoder.conv_in.parameters()).device
                 if conv_device != device:
@@ -1404,83 +1239,83 @@ class HDRVAEDecode:
                         raise RuntimeError(f"Simple bypass device mismatch: decoder on {conv_device}, latent on {device}")
                 else:
                     self.logger.info(f"✅ SIMPLE BYPASS: Both on {device}")
-            
+
             # Input conv
             h = decoder.conv_in(latent)
             self.logger.info(f"After conv_in: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
+
             # MINIMAL MIDDLE BLOCKS with individual block timeouts
             self.logger.info("⚡ Doing MINIMAL middle blocks (skipping attention)")
-            
+
             if hasattr(decoder, 'mid'):
                 import threading
                 import time
-                
+
                 def safe_block_execution(block, input_tensor, block_name):
                     result = [None]
                     exception = [None]
-                    
+
                     def block_worker():
                         try:
                             result[0] = block(input_tensor)
                         except Exception as e:
                             exception[0] = e
-                    
+
                     thread = threading.Thread(target=block_worker)
                     thread.daemon = True
                     thread.start()
                     thread.join(timeout=10)  # 10 second timeout per block
-                    
+
                     if thread.is_alive():
                         raise RuntimeError(f"{block_name} timed out after 10s")
                     elif exception[0]:
                         raise exception[0]
                     else:
                         return result[0]
-                
+
                 try:
                     # Do block_1 with timeout (essential for channel reduction)
                     self.logger.info("🕒 Starting mid.block_1 with 10s timeout...")
                     h_cloned = h.detach().clone()  # Fix inference tensor error
                     h = safe_block_execution(decoder.mid.block_1, h_cloned, "mid.block_1")
                     self.logger.info(f"✅ mid.block_1 completed: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-                    
+
                     # SKIP attention (decoder.mid.attn_1) - this is what causes hangs
                     self.logger.info("🚫 SKIPPING mid.attn_1 (attention) to avoid hangs")
-                    
+
                     # Do block_2 with timeout (complete the middle processing)
                     self.logger.info("🕒 Starting mid.block_2 with 10s timeout...")
                     h_cloned = h.detach().clone()  # Fix inference tensor error
                     h = safe_block_execution(decoder.mid.block_2, h_cloned, "mid.block_2")
                     self.logger.info(f"✅ mid.block_2 completed: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-                    
+
                 except Exception as e:
                     self.logger.error(f"❌ Error in minimal mid blocks: {str(e)}")
                     raise e
-            
+
             # Now do up blocks
             if hasattr(decoder, 'up'):
                 for i, up_block in enumerate(decoder.up):
                     if hasattr(up_block, 'block'):
                         for block in up_block.block:
                             h = block(h)
-                    
+
                     if hasattr(up_block, 'upsample') and up_block.upsample is not None:
                         h = up_block.upsample(h)
-                    
+
                     self.logger.info(f"After up[{i}]: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
+
             # Apply final processing BEFORE conv_out
             if hasattr(decoder, 'norm_out'):
                 h = decoder.norm_out(h)
                 self.logger.info(f"After norm_out: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
+
             h = torch.nn.functional.silu(h)
             self.logger.info(f"After SiLU: range=[{float(torch.min(h)):.3f}, {float(torch.max(h)):.3f}]")
-            
+
             # SKIP conv_out - this preserves HDR!
             self.logger.info("🎯 SKIPPING conv_out - preserving HDR!")
-            
+
             # Convert to RGB if needed
             if h.shape[1] != 3:
                 self.logger.info(f"Converting {h.shape[1]} -> 3 channels")
@@ -1488,15 +1323,15 @@ class HDRVAEDecode:
                 h_flat = h.view(h.shape[0], in_channels, -1).permute(0, 2, 1)
                 h_rgb = torch.nn.functional.linear(h_flat, torch.eye(3, in_channels, device=h.device, dtype=h.dtype)[:, :in_channels])
                 h = h_rgb.permute(0, 2, 1).view(h.shape[0], 3, h.shape[2], h.shape[3])
-            
+
             # Stats
             final_min = float(torch.min(h))
             final_max = float(torch.max(h))
             hdr_pixels = int(torch.sum(h > 1.0))
             self.logger.info(f"🚀 SIMPLE BYPASS OUTPUT: range=[{final_min:.3f}, {final_max:.3f}], HDR pixels: {hdr_pixels}")
-            
+
             # Convert to float32 for ComfyUI
             if h.dtype != torch.float32:
                 h = h.to(dtype=torch.float32)
-            
+
             return h
