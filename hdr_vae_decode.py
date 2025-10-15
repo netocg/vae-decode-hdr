@@ -15,13 +15,25 @@ import logging
 from kornia.core import ImageModule as Module
 from kornia.core import Tensor
 
+# --- Global/Class-level Logger Setup ---
+# Configure the logger once at the class definition level or module level
+logger = logging.getLogger("HDRVAEDecode")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('[HDR VAE] %(levelname)s: %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+
 class HDRVAEDecode:
     """
     Advanced HDR VAE Decode node for professional VFX workflows.
     
     Features:
     - Scientific conv_out analysis with intelligent HDR recovery
-    - Multiple HDR modes: Conservative, Moderate, Exposure, Aggressive
+    - Multiple HDR modes: Conservative, Exposure, mathematical_recovery
     - Smart highlight expansion preserving base image quality
     - Exposure-based HDR for natural compositing workflows
     - Smart bypass fallback for maximum compatibility
@@ -29,15 +41,8 @@ class HDRVAEDecode:
     """
     
     def __init__(self):
-        self.logger = logging.getLogger("HDRVAEDecode")
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setLevel(logging.INFO)
-            formatter = logging.Formatter('[HDR VAE] %(levelname)s: %(message)s')
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
-            self.NORMALIZATION_FUNCTION = str()
+        self.logger = logger
+        self.NORMALIZATION_FUNCTION = str()
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -47,10 +52,13 @@ class HDRVAEDecode:
                 "vae": ("VAE",),
             },
             "optional": {
-                "hdr_mode": (["conservative", "moderate", "exposure", "aggressive"], {"default": "aggressive"}),
-                "max_range": ("FLOAT", {"default": 50.0, "min": 1.0, "max": 1000.0, "step": 1.0}),
-                "scale_factor": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1}),
-                "enable_negatives": ("BOOLEAN", {"default": False}),
+                "hdr_mode": (["conservative", "exposure", "mathematical_recovery"],
+                             {"default": "mathematical_recovery",
+                              "tooltip": "conservative: Gentle ev_multiplier expansion, safest for general use \n "
+                                         "exposure: Natural exposure-based HDR for compositing workflows \n "
+                                         "mathematical_recovery: Full mathematical recovery, maximum range"}),
+                "ev_multiplier": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1, "tooltip": "Expansion multiplier for the conservative mode."}),
+                "enable_negatives": ("BOOLEAN", {"default": False, "tooltip": "Will display any value that is below 0.0"}),
             }
         }
 
@@ -63,21 +71,16 @@ class HDRVAEDecode:
         self,
         samples: Dict[str, torch.Tensor],
         vae: Any,
-        hdr_mode: str = "moderate",
-        max_range: float = 50.0,
-        scale_factor: float = 1.0,
+        hdr_mode: str = "mathematical_recovery",
+        ev_multiplier: float = 1.0,
         enable_negatives: bool = False,
     ) -> Tuple[torch.Tensor]:
         """
         HDR VAE decode with intelligent conv_out analysis and multiple HDR modes.
-        
         HDR Modes:
-        - conservative: Gentle 1.5x expansion, safest for general use
-        - moderate: 3x smart expansion, balanced quality/range (default)
+        - conservative: Gentle ev_multiplier expansion, safest for general use
         - exposure: Natural exposure-based HDR for compositing workflows
-        - adaptive: Natural exposure-based HDR that uses the full mathematical recovery, maximum range as a base.
-        - aggressive: Full mathematical recovery, maximum range
-        
+        - mathematical_recovery: Full mathematical recovery, maximum range
         Features smart highlight expansion preserving base image perceptual quality.
         """
         
@@ -182,17 +185,17 @@ class HDRVAEDecode:
             self.logger.info("✅ Using INTELLIGENT decode result (skipped bypass)")
         
         # Apply scale factor if specified
-        if scale_factor != 1.0:
-            decoded = decoded * scale_factor
-            self.logger.info(f"Applied scale factor: {scale_factor}")
+        if ev_multiplier != 1.0:
+            decoded = decoded * ev_multiplier
+            self.logger.info(f"Applied ev multiplication of: {ev_multiplier}")
         
         # Clamp to wider range, allowing negatives if enabled
         if enable_negatives:
-            hdr_image = torch.clamp(decoded, -max_range, max_range)
-            self.logger.info(f"Clamping to range: [{-max_range:.3f}, {max_range:.3f}] (negatives enabled)")
+            hdr_image = torch.clamp(decoded, analysis_result['pre_stats']['min'], analysis_result['pre_stats']['max'])
+            self.logger.info(f"Clamping to range: [{analysis_result['pre_stats']['min']:.3f}, {analysis_result['pre_stats']['max']:.3f}] (negatives enabled)")
         else:
-            hdr_image = torch.clamp(decoded, 0, max_range)
-            self.logger.info(f"Clamping to range: [0.000, {max_range:.3f}]")
+            hdr_image = torch.clamp(decoded, 0, analysis_result['pre_stats']['max'])
+            self.logger.info(f"Clamping to range: [0.000, {analysis_result['pre_stats']['max']:.3f}]")
         
         # Format tensor for ComfyUI
         formatted = self._format_tensor(hdr_image)
@@ -952,7 +955,7 @@ class HDRVAEDecode:
         clamped = torch.clamp(clamped_output, -1 + epsilon, 1 - epsilon)
         return torch.atanh(clamped)
     
-    def smart_hdr_expansion(self, standard_output, pre_conv_out_values, expansion_factor=2.0):
+    def smart_hdr_expansion(self, standard_output, pre_conv_out_values, expansion_factor=1.0):
         """
         Smart HDR expansion that preserves base image quality while extending highlights.
         """
@@ -993,7 +996,7 @@ class HDRVAEDecode:
             self.logger.info("⚠️ No highlights detected - returning standard output")
             return base
 
-    def exposure_based_hdr(self, standard_output, pre_conv_out_values, max_stops=3.0):
+    def exposure_based_hdr(self, standard_output, pre_conv_out_values, max_stops=20.0):
         """
         Convert extended range to exposure stops for more natural HDR.
         """
@@ -1009,15 +1012,12 @@ class HDRVAEDecode:
         # Anything above 1.0 in pre_conv_out becomes +EV
         exposure_map = torch.log2(torch.clamp(pre_conv_out_values, min=0.001))
         
-        # Limit exposure to reasonable range
-        exposure_map = torch.clamp(exposure_map, min=0, max=max_stops)
-
         # Apply exposure compensation to standard output
         hdr_output = standard_output * torch.pow(2.0, exposure_map)
 
         # Reasonable HDR range for compositing
-        final_result = torch.clamp(hdr_output, min=0, max=10)
-        
+        final_result = torch.clamp(hdr_output, min=0, max=max_stops)
+
         final_min = float(torch.min(final_result))
         final_max = float(torch.max(final_result))
         hdr_pixels = int(torch.sum(final_result > 1.0))
@@ -1026,16 +1026,14 @@ class HDRVAEDecode:
         
         return final_result
 
-    def intelligent_hdr_decode(self, vae, latent, analysis_result, hdr_mode="moderate"):
+    def intelligent_hdr_decode(self, vae, latent, analysis_result, hdr_mode="mathematical_recovery", ev_multiplier=1.0):
         """
         Intelligent HDR decode with multiple modes for different use cases.
 
         Modes:
-        - conservative: 1.0x max, gentle expansion
-        - moderate: 4.0x max with smart expansion
-        - aggressive: Full mathematical recovery
-        - adaptive: Natural exposure-based HDR that uses the full mathematical recovery, maximum range as a base.
+        - conservative: ev_multiplier, gentle expansion
         - exposure: Exposure-based natural HDR
+        - mathematical recovery: Full mathematical recovery
         """
         
         self.logger.info(f"🧠 INTELLIGENT HDR DECODE: Mode = {hdr_mode.upper()}")
@@ -1086,73 +1084,63 @@ class HDRVAEDecode:
         base_max = float(torch.max(standard_result))
         pre_min = float(torch.min(pre_conv_out))
         pre_max = float(torch.max(pre_conv_out))
+        # pre_conv_out seems to have gradients that are not perfectly smooth!
+        pre_stats = analysis_result['pre_stats']
 
         self.logger.info(f"📊 BASE (standard): range=[{base_min:.3f}, {base_max:.3f}]")
         self.logger.info(f"📊 PRE-CONV_OUT: range=[{pre_min:.3f}, {pre_max:.3f}]")
 
+        # 1. Convert standard_result (sRGB) to linear light [0, 1] for RGB operations
+        ldr_linear_image = self.srgb_to_linear(standard_result)
+        # Define a small tolerance for floating point comparison/HDR detection
+        TOL = 1e-3
+        # Check if the internal, pre-activated data contained recoverable HDR information
+        has_hdr_data = pre_max > (1.0 + TOL)
+        # Only execute the aggressive mathematical recovery if HDR data was detected
+        map_recovered = pre_conv_out
+        if has_hdr_data:
+            self.logger.info("✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
+            # 2. Apply adaptive inverse function to recover raw features
+            if self.NORMALIZATION_FUNCTION == "TANH":
+                recovered = self.inverse_tanh(standard_result)
+            elif self.NORMALIZATION_FUNCTION == "SIGMOID":
+                # Original VAEs use this, which requires inverse_sigmoid
+                recovered = self.inverse_sigmoid(standard_result)
+            else:
+                # Fallback: assume standard_result is already the raw feature map
+                self.logger.warning("Unknown NORMALIZATION_FUNCTION. Assuming standard_result is raw feature data.")
+                recovered = standard_result
+
+            # 3. Scale back to approximate original range
+            # the math below produces smoother gradients compared to pre_conv_out!
+            original_range = pre_stats['max'] - pre_stats['min']
+            recovered_normalized = (recovered - torch.min(recovered)) / (torch.max(recovered) - torch.min(recovered))
+            map_recovered = recovered_normalized * original_range + pre_stats['min']
+
         # default result as a fallback
-        final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=1.0)
-
+        final_result = ldr_linear_image
         if hdr_mode == "conservative":
-            # Conservative: 1.5x max with gentle expansion
-            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=2.0)
-            final_result = torch.clamp(final_result, 0, 2.0)
-            self.logger.info("🟢 CONSERVATIVE mode: Gentle 2.0x expansion")
-
-        elif hdr_mode == "moderate":
-            # Moderate: Smart expansion with better tone mapping
-            final_result = self.smart_hdr_expansion(standard_result, pre_conv_out, expansion_factor=3.0)
-            final_result = torch.clamp(final_result, 0, 3.0)
-            self.logger.info("🟡 MODERATE mode: 3.0x smart expansion")
+            final_result = self.smart_hdr_expansion(ldr_linear_image, pre_conv_out, expansion_factor=ev_multiplier)
+            self.logger.info(f"🟢 CONSERVATIVE mode: Gentle expansion of: {ev_multiplier}")
 
         elif hdr_mode == "exposure":
-            # Exposure-based natural HDR
-            final_result = self.exposure_based_hdr(standard_result, pre_conv_out, max_stops=2.5)
+            final_result = self.exposure_based_hdr(ldr_linear_image, map_recovered, pre_stats["max"])
+            self.logger.info("📸 EXPOSURE mode: Natural exposure-based HDR")
 
-        elif hdr_mode == "aggressive":
-            self.logger.info("🔴 AGGRESSIVE mode: Full mathematical recovery")
-            # Define a small tolerance for floating point comparison/HDR detection
-            TOL = 1e-3
-            # Check if the internal, pre-activated data contained recoverable HDR information
-            has_hdr_data = pre_max > (1.0 + TOL)
-            # Only execute the aggressive mathematical recovery if HDR data was detected
-            if has_hdr_data:
-                self.logger.info("✅ HDR Data Detected: Internal Max > 1.0. Enabling full mathematical recovery modes.")
+        elif hdr_mode == "mathematical_recovery":
+            # --- CRUCIAL MIDTONE CORRECTION (Ensures L_ratio mean is 1.0) ---
+            # This shifts the VAE's output so its mean corresponds to a neutral multiplier of 1.0.
+            map_recovered = map_recovered - pre_stats['mean'] + 1.0
+            # 4. Convert corrected map to Exposure Value (EV) in stops
+            ev_target = torch.log2(torch.clamp(map_recovered, min=0.001))
+            # Pre-calculate common components for all modes:
+            # aggressive_multiplier is the VAE's L_ratio (full dynamic range extension)
+            L_ratio = torch.pow(2.0, ev_target)
+            # --- END OF HDR DATA PRE-CALCULATION ---
 
-                # 1. Convert standard_result (sRGB) to linear light [0, 1] for RGB operations
-                ldr_linear_image = self.srgb_to_linear(standard_result)
-                # 2. Apply adaptive inverse function to recover raw features
-                if self.NORMALIZATION_FUNCTION == "TANH":
-                    recovered = self.inverse_tanh(standard_result)
-                elif self.NORMALIZATION_FUNCTION == "SIGMOID":
-                    # Original VAEs use this, which requires inverse_sigmoid
-                    recovered = self.inverse_sigmoid(standard_result)
-                else:
-                    # Fallback: assume standard_result is already the raw feature map
-                    self.logger.warning("Unknown NORMALIZATION_FUNCTION. Assuming standard_result is raw feature data.")
-                    recovered = standard_result
-
-                # 3. Scale back to approximate original range
-                pre_stats = analysis_result['pre_stats']
-                original_range = pre_stats['max'] - pre_stats['min']
-                recovered_normalized = (recovered - torch.min(recovered)) / (torch.max(recovered) - torch.min(recovered))
-                map_recovered = recovered_normalized * original_range + pre_stats['min']
-                # --- CRUCIAL MIDTONE CORRECTION (Ensures L_ratio mean is 1.0) ---
-                # This shifts the VAE's output so its mean corresponds to a neutral multiplier of 1.0.
-                map_recovered = map_recovered - pre_stats['mean'] + 1.0
-                # 4. Convert corrected map to Exposure Value (EV) in stops
-                exposure_map_aggressive = torch.log2(torch.clamp(map_recovered, min=0.001))
-                # Pre-calculate common components for all modes:
-                # aggressive_multiplier is the VAE's L_ratio (full dynamic range extension)
-                aggressive_multiplier = torch.pow(2.0, exposure_map_aggressive)
-                # --- END OF HDR DATA PRE-CALCULATION ---
-
-                # Aggressive: Full mathematical recovery
-                final_result = ldr_linear_image * aggressive_multiplier
-            else:
-                self.logger.warning(
-                    f"⚠️ Mode {hdr_mode.upper()} requested, but no internal HDR data detected. Using fallback.")
-                final_result = ldr_linear_image
+            # Aggressive: Full mathematical recovery
+            final_result = ldr_linear_image * L_ratio
+            self.logger.info("🔴 mathematical_recovery mode")
 
         return final_result
 
