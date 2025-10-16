@@ -58,7 +58,6 @@ class HDRVAEDecode:
                                          "exposure: Natural exposure-based HDR for compositing workflows \n "
                                          "mathematical_recovery: Full mathematical recovery, maximum range"}),
                 "conservative_ev_multiplier": ("FLOAT", {"default": 1.0, "min": 0.1, "max": 10.0, "step": 0.1, "tooltip": "Expansion multiplier for the conservative mode."}),
-                "enable_negatives": ("BOOLEAN", {"default": False, "tooltip": "Will display any value that is below 0.0"}),
             }
         }
 
@@ -73,7 +72,6 @@ class HDRVAEDecode:
         vae: Any,
         hdr_mode: str = "mathematical_recovery",
         conservative_ev_multiplier: float = 1.0,
-        enable_negatives: bool = False,
     ) -> Tuple[torch.Tensor]:
         """
         HDR VAE decode with intelligent conv_out analysis and multiple HDR modes.
@@ -95,7 +93,8 @@ class HDRVAEDecode:
         # FIRST: Analyze what conv_out actually does (NEW SCIENTIFIC APPROACH)
         self.logger.info("🔬 STEP 1: Analyzing conv_out transformation...")
         analysis_result = self.analyze_conv_out(vae, latent)
-        
+
+        decoded = analysis_result["final_result"]
         if analysis_result is not None:
             self.logger.info("✅ Analysis complete! Now we understand the transformation...")
             
@@ -189,16 +188,8 @@ class HDRVAEDecode:
             decoded = decoded * conservative_ev_multiplier
             self.logger.info(f"Applied ev multiplication of: {conservative_ev_multiplier}")
         
-        # Clamp to wider range, allowing negatives if enabled
-        if enable_negatives:
-            hdr_image = torch.clamp(decoded, analysis_result['pre_stats']['min'], analysis_result['pre_stats']['max'])
-            self.logger.info(f"Clamping to range: [{analysis_result['pre_stats']['min']:.3f}, {analysis_result['pre_stats']['max']:.3f}] (negatives enabled)")
-        else:
-            hdr_image = torch.clamp(decoded, 0, analysis_result['pre_stats']['max'])
-            self.logger.info(f"Clamping to range: [0.000, {analysis_result['pre_stats']['max']:.3f}]")
-        
         # Format tensor for ComfyUI
-        formatted = self._format_tensor(hdr_image)
+        formatted = self._format_tensor(decoded)
         
         # Final stats
         final_min = float(torch.min(formatted))
@@ -244,7 +235,6 @@ class HDRVAEDecode:
                     
                     # 🎯 NEW METHOD: MAX POOLING to preserve HDR peaks instead of averaging
                     # Averaging destroys HDR range - use MAX to preserve bright values!
-                    channels_per_rgb = channels // 3  # 42-43 channels per RGB channel
                     r_channels = tensor[:, 0:42, :, :]  # Red from channels 0-41
                     g_channels = tensor[:, 42:84, :, :]  # Green from channels 42-83  
                     b_channels = tensor[:, 84:126, :, :] # Blue from channels 84-125
@@ -397,11 +387,11 @@ class HDRVAEDecode:
                     if name:  # Skip empty names
                         self.logger.info(f"  {name}: {type(module).__name__}")
                         
-                        # Check for activation functions that might clamp values
+                        # Check for activation functions that might normalize the values range
                         if 'sigmoid' in str(type(module)).lower():
-                            self.logger.info(f"    ⚠️  FOUND SIGMOID - this clamps to 0-1!")
+                            self.logger.info(f"    ⚠️  FOUND SIGMOID - this normalize to 0-1!")
                         elif 'tanh' in str(type(module)).lower():
-                            self.logger.info(f"    ⚠️  FOUND TANH - this clamps to -1,1!")
+                            self.logger.info(f"    ⚠️  FOUND TANH - this normalize to -1,1!")
                         elif 'conv' in str(type(module)).lower():
                             self.logger.info(f"    Conv layer - check final layer")
                 
@@ -435,11 +425,11 @@ class HDRVAEDecode:
                 module_type = type(child).__name__
                 self.logger.info(f"{'  ' * depth}{full_name}: {module_type}")
                 
-                # Highlight potential clamping layers
+                # Highlight potential normalize layers
                 if 'sigmoid' in module_type.lower():
-                    self.logger.info(f"{'  ' * (depth+1)}⚠️  SIGMOID - clamps output to 0-1!")
+                    self.logger.info(f"{'  ' * (depth+1)}⚠️  SIGMOID - normalize output to 0-1!")
                 elif 'tanh' in module_type.lower():
-                    self.logger.info(f"{'  ' * (depth+1)}⚠️  TANH - clamps output to -1,1!")
+                    self.logger.info(f"{'  ' * (depth+1)}⚠️  TANH - normalize output to -1,1!")
                 elif 'conv' in module_type.lower() and len(list(child.children())) == 0:
                     # Final conv layer might be the output layer
                     self.logger.info(f"{'  ' * (depth+1)}🔍 Final conv layer - potential output layer")
@@ -941,18 +931,18 @@ class HDRVAEDecode:
             finally:
                 hook.remove()
 
-    def inverse_sigmoid(self, clamped_output):
+    def inverse_sigmoid(self, normalized_result):
         """Apply inverse sigmoid to recover wider range values."""
         # Avoid edge cases
         epsilon = 1e-7
-        clamped = torch.clamp(clamped_output, epsilon, 1 - epsilon)
+        clamped = torch.clamp(normalized_result, epsilon, 1 - epsilon)
         return torch.logit(clamped)
     
-    def inverse_tanh(self, clamped_output):
+    def inverse_tanh(self, normalized_result):
         """Apply inverse tanh to recover wider range values.""" 
         # Avoid edge cases
         epsilon = 1e-6
-        clamped = torch.clamp(clamped_output, -1 + epsilon, 1 - epsilon)
+        clamped = torch.clamp(normalized_result, -1 + epsilon, 1 - epsilon)
         return torch.atanh(clamped)
     
     def smart_hdr_expansion(self, standard_output, pre_conv_out_values, expansion_factor=1.0):
@@ -1013,10 +1003,7 @@ class HDRVAEDecode:
         exposure_map = torch.log2(torch.clamp(pre_conv_out_values, min=0.001))
         
         # Apply exposure compensation to standard output
-        hdr_output = standard_output * torch.pow(2.0, exposure_map)
-
-        # Reasonable HDR range for compositing
-        final_result = torch.clamp(hdr_output, min=0, max=max_stops)
+        final_result = standard_output * torch.pow(2.0, exposure_map)
 
         final_min = float(torch.min(final_result))
         final_max = float(torch.max(final_result))
