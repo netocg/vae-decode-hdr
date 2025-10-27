@@ -16,15 +16,8 @@ from kornia.core import ImageModule as Module
 from kornia.core import Tensor
 
 # --- Global/Class-level Logger Setup ---
-# Configure the logger once at the class definition level or module level
-logger = logging.getLogger("HDRVAEDecode")
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter('[HDR VAE] %(levelname)s: %(message)s')
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class HDRVAEDecode:

@@ -505,13 +505,3 @@ class LinearEXRExport:
                 'height': 0,
                 'channels': 0
             }
-
-
-# Node class mappings for ComfyUI
-NODE_CLASS_MAPPINGS = {
-    "LinearEXRExport": LinearEXRExport
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "LinearEXRExport": "Linear EXR Export"
-}
